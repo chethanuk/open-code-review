@@ -14,14 +14,10 @@ func TestSetConfigValueAuthHeaderNormalizesKnownValues(t *testing.T) {
 	}
 }
 
-func TestSetConfigValueAuthHeaderTrimsCustomHeader(t *testing.T) {
+func TestSetConfigValueAuthHeaderRejectsCustomHeader(t *testing.T) {
 	cfg := &Config{}
 
-	if err := setConfigValue(cfg, "llm.auth_header", " X-Custom-Auth "); err != nil {
-		t.Fatalf("setConfigValue: %v", err)
-	}
-
-	if cfg.Llm.AuthHeader != "X-Custom-Auth" {
-		t.Errorf("AuthHeader = %q, want %q", cfg.Llm.AuthHeader, "X-Custom-Auth")
+	if err := setConfigValue(cfg, "llm.auth_header", " X-Custom-Auth "); err == nil {
+		t.Fatal("expected error for unsupported auth_header, got nil")
 	}
 }
