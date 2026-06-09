@@ -97,6 +97,33 @@ func TestWorkspaceDiffSurvivesExternalDiffTool(t *testing.T) {
 	}
 }
 
+// TestCommitDiffSurvivesExternalDiffTool covers the ModeCommit call site
+// (git show <commit>), which likewise must pass --no-ext-diff so that a
+// user's external diff tool does not break single-commit analysis.
+func TestCommitDiffSurvivesExternalDiffTool(t *testing.T) {
+	repo := initRepoWithChange(t)
+
+	runGitTest(t, repo, "add", "sample.txt")
+	runGitTest(t, repo, "commit", "-q", "-m", "second commit")
+
+	garbage := writeGarbageExternalDiff(t)
+	t.Setenv("GIT_EXTERNAL_DIFF", garbage)
+
+	runner := gitcmd.New(0)
+	provider := NewCommitProvider(repo, "HEAD", runner)
+
+	diffs, err := provider.GetDiff(context.Background())
+	if err != nil {
+		t.Fatalf("GetDiff (commit) returned error: %v", err)
+	}
+
+	if len(diffs) == 0 {
+		t.Fatalf("expected at least one parsed commit diff with an external diff "+
+			"tool active, got 0 -- git show call site must pass "+
+			"--no-ext-diff (issue #82). GIT_EXTERNAL_DIFF=%s", garbage)
+	}
+}
+
 // TestRangeDiffSurvivesExternalDiffTool covers the ModeRange call site
 // (git diff <base> <to>), which likewise must pass --no-ext-diff so that a
 // user's external diff tool does not break range comparisons.
