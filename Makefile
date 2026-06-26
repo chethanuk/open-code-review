@@ -14,13 +14,15 @@ BUILD_DATE  := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 VERSION     ?= $(if $(GIT_TAG),$(GIT_TAG),v0.0.0-$(GIT_COMMIT))
 
-LD_FLAGS    := -s -w \
+LD_FLAGS    := \
 	-X main.Version=$(VERSION) \
 	-X main.GitCommit=$(GIT_COMMIT) \
 	-X main.BuildDate=$(BUILD_DATE)
 
+RELEASE_LD_FLAGS := -s -w $(LD_FLAGS)
+
 define BUILD_PLATFORM
-	GOOS=$(1) GOARCH=$(2) CGO_ENABLED=0 $(GO) build -ldflags "$(LD_FLAGS)" \
+	GOOS=$(1) GOARCH=$(2) CGO_ENABLED=0 $(GO) build -ldflags "$(RELEASE_LD_FLAGS)" \
 		-o $(DIST_DIR)/$(BINARY_NAME)-$(1)-$(2)$(3) \
 		./cmd/opencodereview
 endef

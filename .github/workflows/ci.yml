@@ -12,6 +12,7 @@ permissions:
 jobs:
   test:
     runs-on: self-hosted
+    timeout-minutes: 15
     container:
       image: golang:1.26.4
     steps:
@@ -22,6 +23,11 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: Govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
 
       - name: Test
         run: go test -v -race -count=1 ./...
