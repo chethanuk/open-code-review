@@ -16,12 +16,24 @@ const LanguageContext = createContext<LanguageContextValue | null>(null);
 
 const STORAGE_KEY = 'ocr-lang';
 
+const SUPPORTED_LANGUAGES: Language[] = ['en', 'zh', 'ja'];
+
+function detectBrowserLanguage(): Language | null {
+  try {
+    for (const lang of navigator.languages ?? [navigator.language]) {
+      const code = lang.toLowerCase().split('-')[0];
+      if (SUPPORTED_LANGUAGES.includes(code as Language)) return code as Language;
+    }
+  } catch {}
+  return null;
+}
+
 function getInitialLanguage(): Language {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'en' || stored === 'zh' || stored === 'ja') return stored;
+    if (stored && SUPPORTED_LANGUAGES.includes(stored as Language)) return stored as Language;
   } catch {}
-  return 'en';
+  return detectBrowserLanguage() ?? 'en';
 }
 
 export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
