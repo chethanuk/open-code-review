@@ -15,6 +15,8 @@ export const en: TranslationKeys = {
   'hero.quickStart': 'Quick Start',
   'hero.learnMore': 'Learn More',
   'hero.terminal': 'Terminal',
+  'hero.copied': 'Copied!',
+  'hero.copyFailed': 'Copy failed',
 
   // Highlights
   'highlights.stat1Value': '20K+',

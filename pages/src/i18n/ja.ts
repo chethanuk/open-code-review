@@ -15,6 +15,8 @@ export const ja: TranslationKeys = {
   'hero.quickStart': 'クイックスタート',
   'hero.learnMore': '詳しく見る',
   'hero.terminal': 'ターミナル',
+  'hero.copied': 'コピーしました',
+  'hero.copyFailed': 'コピー失敗',
 
   // Highlights
   'highlights.stat1Value': '20K+',

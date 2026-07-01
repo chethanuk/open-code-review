@@ -15,6 +15,8 @@ export const zh: TranslationKeys = {
   'hero.quickStart': '快速开始',
   'hero.learnMore': '了解更多',
   'hero.terminal': '终端',
+  'hero.copied': '已复制',
+  'hero.copyFailed': '复制失败',
 
   // Highlights
   'highlights.stat1Value': '20K+',
