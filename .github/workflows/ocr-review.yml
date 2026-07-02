@@ -75,7 +75,7 @@ jobs:
   code-review:
     runs-on: self-hosted
     container:
-      image: node:20
+      image: node:24
     if: github.event_name == 'pull_request_target'
     steps:
       - name: Checkout repository
