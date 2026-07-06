@@ -225,6 +225,17 @@ var registry = []Provider{
 			"kimi-k2.6",
 		},
 	},
+	{
+		Name:        "ollama-cloud",
+		DisplayName: "Ollama Cloud API",
+		Protocol:    "openai",
+		BaseURL:     "https://ollama.com/v1",
+		EnvVar:      "OLLAMA_API_KEY",
+		Models: []string{
+			"gpt-oss:120b",
+			"gpt-oss:20b",
+		},
+	},
 }
 
 var registryMap map[string]Provider
