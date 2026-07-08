@@ -147,7 +147,7 @@ func TestLookupProvider_GeminiDetails(t *testing.T) {
 	if !p.LegacyMaxTokens {
 		t.Errorf("LegacyMaxTokens = %v, want true", p.LegacyMaxTokens)
 	}
-	expected := []string{"gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash"}
+	expected := []string{"gemini-2.5-flash", "gemini-2.5-pro"}
 	if len(p.Models) != len(expected) {
 		t.Fatalf("expected %d models, got %d", len(expected), len(p.Models))
 	}

@@ -121,11 +121,11 @@ var registry = []Provider{
 		EnvVar:          "GEMINI_API_KEY",
 		LegacyMaxTokens: true,
 		Models: []string{
-			"gemini-3.1-pro-preview",
-			"gemini-3-flash-preview",
-			"gemini-3.1-flash-lite",
-			"gemini-2.5-pro",
+			// Gemini 3.x -preview models 400 on OCR's multi-turn tool-calling review
+			// path (thought_signature must be echoed back, which the OpenAI-compat client
+			// does not yet do). Ship only the GA 2.5 models, verified end-to-end.
 			"gemini-2.5-flash",
+			"gemini-2.5-pro",
 		},
 	},
 	{
