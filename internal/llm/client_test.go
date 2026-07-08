@@ -95,6 +95,46 @@ func TestNewAnthropicClient_URLNormalization(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAIParams_LegacyMaxTokens(t *testing.T) {
+	tests := []struct {
+		name            string
+		legacyMaxTokens bool
+	}{
+		{name: "legacy sends max_tokens", legacyMaxTokens: true},
+		{name: "modern sends max_completion_tokens", legacyMaxTokens: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewOpenAIClient(ClientConfig{
+				URL:             "https://api.example.com/v1",
+				LegacyMaxTokens: tt.legacyMaxTokens,
+			})
+
+			params := client.buildOpenAIParams("some-model", ChatRequest{
+				Messages:  []Message{{Role: "user", Content: "hi"}},
+				MaxTokens: 1000,
+			})
+
+			if tt.legacyMaxTokens {
+				if !params.MaxTokens.Valid() || params.MaxTokens.Value != 1000 {
+					t.Errorf("MaxTokens = %+v (valid=%v), want 1000", params.MaxTokens.Value, params.MaxTokens.Valid())
+				}
+				if params.MaxCompletionTokens.Valid() {
+					t.Errorf("MaxCompletionTokens = %+v, want unset", params.MaxCompletionTokens.Value)
+				}
+			} else {
+				if !params.MaxCompletionTokens.Valid() || params.MaxCompletionTokens.Value != 1000 {
+					t.Errorf("MaxCompletionTokens = %+v (valid=%v), want 1000", params.MaxCompletionTokens.Value, params.MaxCompletionTokens.Valid())
+				}
+				if params.MaxTokens.Valid() {
+					t.Errorf("MaxTokens = %+v, want unset", params.MaxTokens.Value)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildAnthropicParams_CacheControl(t *testing.T) {
 	client := NewAnthropicClient(ClientConfig{URL: "https://api.anthropic.com"})
 

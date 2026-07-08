@@ -22,6 +22,9 @@ type ResolvedEndpoint struct {
 	Source       string            // human-readable config source label
 	ExtraBody    map[string]any    // vendor-specific request body fields
 	ExtraHeaders map[string]string // extra HTTP headers for the LLM request
+	// LegacyMaxTokens sends the legacy `max_tokens` request field instead of
+	// `max_completion_tokens`. Set from a provider preset (e.g. Gemini).
+	LegacyMaxTokens bool
 	// Timeout is the per-request HTTP timeout; 0 means use the client default (5 min).
 	// Only config file (llm/provider sections) and OCR_LLM_TIMEOUT env var can set this.
 	// tryCCEnv and tryShellRC always leave it at 0 since those sources have no timeout
@@ -271,11 +274,13 @@ func tryProviderConfig(cfg configFile, modelOverride string) (ResolvedEndpoint, 
 
 	var url, protocol, authHeader, model string
 	var extraBody map[string]any
+	var legacyMaxTokens bool
 
 	if isPreset {
 		url = preset.BaseURL
 		protocol = preset.Protocol
 		authHeader = preset.AuthHeader
+		legacyMaxTokens = preset.LegacyMaxTokens
 		if entry.URL != "" {
 			url = entry.URL
 		}
@@ -360,15 +365,16 @@ func tryProviderConfig(cfg configFile, modelOverride string) (ResolvedEndpoint, 
 	}
 
 	return ResolvedEndpoint{
-		URL:          url,
-		Token:        apiKey,
-		Model:        model,
-		Protocol:     protocol,
-		AuthHeader:   authHeader,
-		Source:       "provider:" + cfg.Provider,
-		ExtraBody:    extraBody,
-		ExtraHeaders: extraHeaders,
-		Timeout:      timeout,
+		URL:             url,
+		Token:           apiKey,
+		Model:           model,
+		Protocol:        protocol,
+		AuthHeader:      authHeader,
+		Source:          "provider:" + cfg.Provider,
+		ExtraBody:       extraBody,
+		ExtraHeaders:    extraHeaders,
+		Timeout:         timeout,
+		LegacyMaxTokens: legacyMaxTokens,
 	}, true, nil
 }
 

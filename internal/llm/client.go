@@ -186,6 +186,9 @@ type ClientConfig struct {
 	Timeout      time.Duration     // Request timeout
 	ExtraBody    map[string]any    // Vendor-specific fields merged into every request body
 	ExtraHeaders map[string]string // Extra HTTP headers sent with every request
+	// LegacyMaxTokens sends the legacy `max_tokens` request field instead of
+	// `max_completion_tokens` (required by Gemini's OpenAI-compatible endpoint).
+	LegacyMaxTokens bool
 }
 
 // --- Factory ---
@@ -201,6 +204,8 @@ func NewLLMClient(ep ResolvedEndpoint) LLMClient {
 		Timeout:      ep.Timeout,
 		ExtraBody:    ep.ExtraBody,
 		ExtraHeaders: ep.ExtraHeaders,
+
+		LegacyMaxTokens: ep.LegacyMaxTokens,
 	}
 	if ep.Protocol == "anthropic" {
 		return NewAnthropicClient(cfg)
@@ -400,7 +405,11 @@ func (c *OpenAIClient) buildOpenAIParams(model string, req ChatRequest) openai.C
 		params.Tools = tools
 	}
 	if req.MaxTokens > 0 {
-		params.MaxCompletionTokens = openai.Int(int64(req.MaxTokens))
+		if c.cfg.LegacyMaxTokens {
+			params.MaxTokens = openai.Int(int64(req.MaxTokens))
+		} else {
+			params.MaxCompletionTokens = openai.Int(int64(req.MaxTokens))
+		}
 	}
 	if req.Temperature != nil {
 		params.Temperature = openai.Float(*req.Temperature)
