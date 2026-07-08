@@ -95,6 +95,92 @@ func TestNewAnthropicClient_URLNormalization(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAIParams_LegacyMaxTokens(t *testing.T) {
+	tests := []struct {
+		name            string
+		legacyMaxTokens bool
+		maxTokens       int
+	}{
+		{name: "legacy sends max_tokens", legacyMaxTokens: true, maxTokens: 1000},
+		{name: "modern sends max_completion_tokens", legacyMaxTokens: false, maxTokens: 1000},
+		// MaxTokens==0 must leave BOTH fields unset (gates the `req.MaxTokens > 0` guard),
+		// regardless of the legacy flag.
+		{name: "legacy with zero max_tokens sets neither", legacyMaxTokens: true, maxTokens: 0},
+		{name: "modern with zero max_tokens sets neither", legacyMaxTokens: false, maxTokens: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewOpenAIClient(ClientConfig{
+				URL:             "https://api.example.com/v1",
+				LegacyMaxTokens: tt.legacyMaxTokens,
+			})
+
+			params := client.buildOpenAIParams("some-model", ChatRequest{
+				Messages:  []Message{{Role: "user", Content: "hi"}},
+				MaxTokens: tt.maxTokens,
+			})
+
+			if tt.maxTokens == 0 {
+				if params.MaxTokens.Valid() {
+					t.Errorf("MaxTokens = %+v, want unset when MaxTokens==0", params.MaxTokens.Value)
+				}
+				if params.MaxCompletionTokens.Valid() {
+					t.Errorf("MaxCompletionTokens = %+v, want unset when MaxTokens==0", params.MaxCompletionTokens.Value)
+				}
+				return
+			}
+
+			if tt.legacyMaxTokens {
+				if !params.MaxTokens.Valid() || params.MaxTokens.Value != int64(tt.maxTokens) {
+					t.Errorf("MaxTokens = %+v (valid=%v), want %d", params.MaxTokens.Value, params.MaxTokens.Valid(), tt.maxTokens)
+				}
+				if params.MaxCompletionTokens.Valid() {
+					t.Errorf("MaxCompletionTokens = %+v, want unset", params.MaxCompletionTokens.Value)
+				}
+			} else {
+				if !params.MaxCompletionTokens.Valid() || params.MaxCompletionTokens.Value != int64(tt.maxTokens) {
+					t.Errorf("MaxCompletionTokens = %+v (valid=%v), want %d", params.MaxCompletionTokens.Value, params.MaxCompletionTokens.Valid(), tt.maxTokens)
+				}
+				if params.MaxTokens.Valid() {
+					t.Errorf("MaxTokens = %+v, want unset", params.MaxTokens.Value)
+				}
+			}
+		})
+	}
+}
+
+// TestNewLLMClient_LegacyMaxTokensForwarded guards the ResolvedEndpoint -> ClientConfig
+// hop: a dropped assignment in NewLLMClient would silently send max_completion_tokens
+// to a Gemini endpoint (400). client_test.go is in-package, so we can read cfg directly.
+func TestNewLLMClient_LegacyMaxTokensForwarded(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{name: "legacy true forwarded", want: true},
+		{name: "legacy false forwarded", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewLLMClient(ResolvedEndpoint{
+				URL:             "https://api.example.com/v1",
+				Token:           "test-token",
+				Model:           "test-model",
+				Protocol:        "openai",
+				LegacyMaxTokens: tt.want,
+			})
+			oc, ok := client.(*OpenAIClient)
+			if !ok {
+				t.Fatalf("expected *OpenAIClient, got %T", client)
+			}
+			if oc.cfg.LegacyMaxTokens != tt.want {
+				t.Errorf("OpenAIClient cfg.LegacyMaxTokens = %v, want %v", oc.cfg.LegacyMaxTokens, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildAnthropicParams_CacheControl(t *testing.T) {
 	client := NewAnthropicClient(ClientConfig{URL: "https://api.anthropic.com"})
 

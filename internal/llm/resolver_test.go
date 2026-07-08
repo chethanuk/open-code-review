@@ -334,6 +334,74 @@ func TestResolveEndpoint_ProviderOpenAI(t *testing.T) {
 	}
 }
 
+// TestResolveEndpoint_ProviderLegacyMaxTokens guards the preset -> ResolvedEndpoint hop
+// through the same public path real usage takes: resolving provider:gemini must yield
+// LegacyMaxTokens=true, while presets/custom providers that don't opt in stay false.
+// A dropped assignment here would keep all other tests green while Gemini users silently
+// send max_completion_tokens and get 400s.
+func TestResolveEndpoint_ProviderLegacyMaxTokens(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  configFile
+		want bool
+	}{
+		{
+			name: "gemini preset resolves with legacy max_tokens",
+			cfg: configFile{
+				Provider: "gemini",
+				Providers: map[string]providerEntryConfig{
+					"gemini": {APIKey: "gemini-key", Model: "gemini-2.5-flash"},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "anthropic preset does not set legacy max_tokens",
+			cfg: configFile{
+				Provider: "anthropic",
+				Providers: map[string]providerEntryConfig{
+					"anthropic": {APIKey: "sk-ant-test", Model: "claude-sonnet-4-6"},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "custom provider does not set legacy max_tokens",
+			cfg: configFile{
+				Provider: "my-gateway",
+				CustomProviders: map[string]providerEntryConfig{
+					"my-gateway": {
+						APIKey:   "token",
+						URL:      "https://gateway.internal.com/v1",
+						Protocol: "openai",
+						Model:    "llama-3-70b",
+					},
+				},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearAllEnv(t)
+			data, _ := json.Marshal(tt.cfg)
+			cfgPath := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(cfgPath, data, 0644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			ep, err := ResolveEndpoint(cfgPath)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if ep.LegacyMaxTokens != tt.want {
+				t.Errorf("LegacyMaxTokens = %v, want %v", ep.LegacyMaxTokens, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveEndpoint_ProviderModelOverride(t *testing.T) {
 	clearAllEnv(t)
 
