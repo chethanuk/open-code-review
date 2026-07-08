@@ -14,6 +14,10 @@ type Provider struct {
 	AuthHeader  string // Anthropic-only; empty for OpenAI-compatible
 	EnvVar      string // environment variable name for API key fallback
 	Models      []string
+
+	// LegacyMaxTokens forces the legacy `max_tokens` request field instead of
+	// `max_completion_tokens` for OpenAI-compatible endpoints that require it.
+	LegacyMaxTokens bool
 }
 
 var registry = []Provider{
@@ -107,6 +111,21 @@ var registry = []Provider{
 		Models: []string{
 			"deepseek-v4-pro",
 			"deepseek-v4-flash",
+		},
+	},
+	{
+		Name:            "gemini",
+		DisplayName:     "Google Gemini API",
+		Protocol:        "openai",
+		BaseURL:         "https://generativelanguage.googleapis.com/v1beta/openai",
+		EnvVar:          "GEMINI_API_KEY",
+		LegacyMaxTokens: true,
+		Models: []string{
+			"gemini-3.1-pro-preview",
+			"gemini-3-flash-preview",
+			"gemini-3.1-flash-lite",
+			"gemini-2.5-pro",
+			"gemini-2.5-flash",
 		},
 	},
 	{

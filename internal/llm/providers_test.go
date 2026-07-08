@@ -40,7 +40,7 @@ func TestListProviders_Order(t *testing.T) {
 	if len(providers) < 3 {
 		t.Fatalf("expected at least 3 providers, got %d", len(providers))
 	}
-	expected := []string{"anthropic", "baidu-qianfan", "dashscope", "dashscope-tokenplan", "deepseek", "hy-tokenplan", "kimi", "mimo", "minimax", "openai", "tencent-tokenhub", "volcengine", "z-ai", "z-ai-coding"}
+	expected := []string{"anthropic", "baidu-qianfan", "dashscope", "dashscope-tokenplan", "deepseek", "gemini", "hy-tokenplan", "kimi", "mimo", "minimax", "openai", "tencent-tokenhub", "volcengine", "z-ai", "z-ai-coding"}
 	if len(providers) != len(expected) {
 		t.Fatalf("expected %d providers, got %d", len(expected), len(providers))
 	}
@@ -124,5 +124,36 @@ func TestLookupProvider_OpenAIDetails(t *testing.T) {
 	}
 	if p.AuthHeader != "" {
 		t.Errorf("AuthHeader = %q, want empty", p.AuthHeader)
+	}
+}
+
+func TestLookupProvider_GeminiDetails(t *testing.T) {
+	p, ok := LookupProvider("gemini")
+	if !ok {
+		t.Fatal("gemini not found")
+	}
+	if p.Protocol != "openai" {
+		t.Errorf("Protocol = %q, want %q", p.Protocol, "openai")
+	}
+	if p.BaseURL != "https://generativelanguage.googleapis.com/v1beta/openai" {
+		t.Errorf("BaseURL = %q, want %q", p.BaseURL, "https://generativelanguage.googleapis.com/v1beta/openai")
+	}
+	if p.EnvVar != "GEMINI_API_KEY" {
+		t.Errorf("EnvVar = %q, want %q", p.EnvVar, "GEMINI_API_KEY")
+	}
+	if p.AuthHeader != "" {
+		t.Errorf("AuthHeader = %q, want empty", p.AuthHeader)
+	}
+	if !p.LegacyMaxTokens {
+		t.Errorf("LegacyMaxTokens = %v, want true", p.LegacyMaxTokens)
+	}
+	expected := []string{"gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash"}
+	if len(p.Models) != len(expected) {
+		t.Fatalf("expected %d models, got %d", len(expected), len(p.Models))
+	}
+	for i, model := range expected {
+		if p.Models[i] != model {
+			t.Errorf("Models[%d] = %q, want %q", i, p.Models[i], model)
+		}
 	}
 }
