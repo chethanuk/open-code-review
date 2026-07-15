@@ -158,6 +158,15 @@ func toLoopTemplate(s template.ScanTemplate) template.Template {
 // Session returns the session history associated with this Agent.
 func (a *Agent) Session() *session.SessionHistory { return a.session }
 
+// Manifest returns the run manifest produced at Finalize, or nil before the
+// run completes. Surfaced verbatim in --format json.
+func (a *Agent) Manifest() *session.RunManifest {
+	if a == nil || a.session == nil {
+		return nil
+	}
+	return a.session.Manifest()
+}
+
 // SessionID returns the current scan's session id, or "" when no session has been created.
 func (a *Agent) SessionID() string {
 	if a == nil || a.session == nil {

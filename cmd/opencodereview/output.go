@@ -10,6 +10,7 @@ import (
 
 	"github.com/open-code-review/open-code-review/internal/agent"
 	"github.com/open-code-review/open-code-review/internal/model"
+	"github.com/open-code-review/open-code-review/internal/session"
 	"github.com/open-code-review/open-code-review/internal/suggestdiff"
 )
 
@@ -249,6 +250,9 @@ type jsonOutput struct {
 	ProjectSummary string               `json:"project_summary,omitempty"`
 	Resume         *agent.ResumeInfo    `json:"resume,omitempty"`
 	SessionID      string               `json:"session_id,omitempty"`
+	// Manifest is the immutable run manifest (coverage + terminal state). It is
+	// the NEW machine contract; the legacy Status field above is unchanged.
+	Manifest *session.RunManifest `json:"manifest,omitempty"`
 }
 
 func outputJSON(comments []model.LlmComment) error {
@@ -266,7 +270,7 @@ func outputJSON(comments []model.LlmComment) error {
 
 func outputJSONWithWarnings(comments []model.LlmComment, warnings []agent.AgentWarning,
 	filesReviewed, inputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens int64,
-	duration time.Duration, projectSummary string, toolCalls map[string]int64, traceID string, resumeInfo *agent.ResumeInfo, sessionID string) error {
+	duration time.Duration, projectSummary string, toolCalls map[string]int64, traceID string, resumeInfo *agent.ResumeInfo, sessionID string, manifest *session.RunManifest) error {
 	out := jsonOutput{
 		Status:   "success",
 		TraceID:  traceID,
@@ -284,6 +288,7 @@ func outputJSONWithWarnings(comments []model.LlmComment, warnings []agent.AgentW
 		ProjectSummary: projectSummary,
 		Resume:         resumeInfo,
 		SessionID:      sessionID,
+		Manifest:       manifest,
 	}
 	var total int64
 	for _, v := range toolCalls {
@@ -317,7 +322,7 @@ func outputJSONWithWarnings(comments []model.LlmComment, warnings []agent.AgentW
 	return enc.Encode(out)
 }
 
-func outputJSONNoFiles(traceID string) error {
+func outputJSONNoFiles(traceID string, manifest *session.RunManifest) error {
 	out := jsonOutput{
 		Status:   "skipped",
 		TraceID:  traceID,
@@ -326,6 +331,7 @@ func outputJSONNoFiles(traceID string) error {
 		ToolCalls: &jsonToolCalls{
 			ByTool: map[string]int64{},
 		},
+		Manifest: manifest,
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
