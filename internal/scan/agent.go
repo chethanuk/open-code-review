@@ -67,6 +67,9 @@ type Args struct {
 	// batches are dispatched. 0 = unlimited. Set via --max-tokens-budget
 	// or ScanTemplate.MaxTokensBudget.
 	MaxTokensBudget int64
+	// RunMeta carries cmd-layer-populated run-identity metadata folded into
+	// the run manifest at Finalize. Ignored when Session is supplied.
+	RunMeta session.RunMeta
 }
 
 // planEnabled / dedupEnabled / summaryEnabled report whether each optional
@@ -114,6 +117,7 @@ func NewAgent(args Args) *Agent {
 	if args.Session == nil {
 		args.Session = session.New(args.RepoDir, "", args.Model, session.SessionOptions{
 			ReviewMode: session.ReviewModeFullScan,
+			RunMeta:    args.RunMeta,
 		})
 	}
 	a := &Agent{

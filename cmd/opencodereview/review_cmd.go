@@ -98,6 +98,13 @@ func runReview(args []string) error {
 	rt.PlanToolDefs = append(rt.PlanToolDefs, mcpToolDefs...)
 	rt.MainToolDefs = append(rt.MainToolDefs, mcpToolDefs...)
 
+	var lang string
+	if rt.AppCfg != nil {
+		lang = rt.AppCfg.Language
+	}
+	runMeta := buildRunMeta(rt.Endpoint, lang, Version, cc.RepoDir, opts.rulePath, opts.concurrency,
+		resolveRange(cc.RepoDir, opts.from, opts.to, opts.commit))
+
 	ag := agent.New(agent.Args{
 		RepoDir:               cc.RepoDir,
 		From:                  opts.from,
@@ -119,6 +126,7 @@ func runReview(args []string) error {
 		Background:            opts.background,
 		GitRunner:             cc.GitRunner,
 		Resume:                resumeState,
+		RunMeta:               runMeta,
 	})
 
 	// Silence progress output during execution; restored before the trace

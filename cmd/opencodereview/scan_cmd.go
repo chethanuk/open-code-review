@@ -182,6 +182,13 @@ func runScan(args []string) error {
 	}
 	tools := buildToolRegistry(rt.Collector, fileReader)
 
+	var lang string
+	if rt.AppCfg != nil {
+		lang = rt.AppCfg.Language
+	}
+	// Scan has no diff range; resolvedRange stays empty.
+	runMeta := buildRunMeta(rt.Endpoint, lang, Version, cc.RepoDir, opts.rulePath, opts.concurrency, resolvedRange{})
+
 	ag := scan.NewAgent(scan.Args{
 		RepoDir:               cc.RepoDir,
 		Paths:                 scanPaths,
@@ -203,6 +210,7 @@ func runScan(args []string) error {
 		SkipPlan:              opts.noPlan,
 		SkipDedup:             opts.noDedup,
 		SkipSummary:           opts.noSummary,
+		RunMeta:               runMeta,
 	})
 
 	q := newQuietHandle(opts.outputFormat, opts.audience)

@@ -134,6 +134,9 @@ type llmRuntime struct {
 	MainToolDefs []llm.ToolDef
 	Collector    *tool.CommentCollector
 	AppCfg       *Config
+	// Endpoint is the resolved LLM endpoint. Retained so the command layer
+	// can derive non-secret run-manifest metadata (provider, config hash).
+	Endpoint llm.ResolvedEndpoint
 }
 
 // loadLLMRuntime loads tool defs from toolConfigPath, reads the app config
@@ -177,6 +180,7 @@ func loadLLMRuntime(tpl *template.Template, toolConfigPath, modelOverride string
 		MainToolDefs: mainToolDefs,
 		Collector:    tool.NewCommentCollector(),
 		AppCfg:       appCfg,
+		Endpoint:     ep,
 	}, nil
 }
 

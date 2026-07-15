@@ -119,6 +119,12 @@ type Args struct {
 
 	// Resume is an optional read-only checkpoint index from a previous review session.
 	Resume *session.ResumeState
+
+	// RunMeta carries cmd-layer-populated run-identity metadata (version,
+	// provider, config/rules hashes, repo identity, resolved range SHAs). It
+	// is folded into the run manifest at Finalize. Ignored when Session is
+	// supplied pre-built by the caller.
+	RunMeta session.RunMeta
 }
 
 // Agent orchestrates the AI-powered code review. LLM tool-use loop / memory
@@ -165,6 +171,7 @@ func New(args Args) *Agent {
 			DiffTo:      args.To,
 			DiffCommit:  args.Commit,
 			ResumedFrom: resumedFromSession(args.Resume),
+			RunMeta:     args.RunMeta,
 		})
 	}
 	a := &Agent{
