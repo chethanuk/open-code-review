@@ -205,6 +205,36 @@ func TestWorkspaceDiffSurvivesExternalDiffTool(t *testing.T) {
 	}
 }
 
+// TestWorkspaceDiffNoCommitsUsesStagedFallback pins the second runGit call in
+// workspaceTrackedDiff: in a repository with no commits there is no HEAD, so
+// `git diff HEAD` fails, and the staged diff is the only way to review the
+// workspace. Removing the `--staged` fallback (as an over-eager "simplification"
+// might) makes this return zero diffs.
+func TestWorkspaceDiffNoCommitsUsesStagedFallback(t *testing.T) {
+	repo := t.TempDir()
+	runGitTest(t, repo, "init", "-q")
+
+	// Staged file, no commit yet -> no HEAD. No commit also means no need for
+	// the user.email/user.name/commit.gpgsign config the committing tests set.
+	file := filepath.Join(repo, "staged.txt")
+	if err := os.WriteFile(file, []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatalf("write staged.txt: %v", err)
+	}
+	runGitTest(t, repo, "add", "staged.txt")
+
+	runner := gitcmd.New(0)
+	provider := NewWorkspaceProvider(repo, runner)
+
+	diffs, err := provider.GetDiff(context.Background())
+	if err != nil {
+		t.Fatalf("GetDiff returned error: %v", err)
+	}
+	if len(diffs) == 0 {
+		t.Fatalf("expected staged changes to be surfaced in a repo with no commits " +
+			"(the --staged fallback in workspaceTrackedDiff), got 0 diffs")
+	}
+}
+
 // TestCommitDiffSurvivesExternalDiffTool covers the ModeCommit call site
 // (git show <commit>), which likewise must pass --no-ext-diff so that a
 // user's external diff tool does not break single-commit analysis.
