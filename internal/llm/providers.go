@@ -207,6 +207,17 @@ var registry = []Provider{
 		},
 	},
 	{
+		Name:        "ollama-cloud",
+		DisplayName: "Ollama Cloud API",
+		Protocol:    "openai",
+		BaseURL:     "https://ollama.com/v1",
+		EnvVar:      "OLLAMA_API_KEY",
+		Models: []string{
+			"gpt-oss:120b",
+			"gpt-oss:20b",
+		},
+	},
+	{
 		Name:        "baidu-qianfan",
 		DisplayName: "Baidu Qianfan API",
 		Protocol:    "openai",
@@ -223,17 +234,6 @@ var registry = []Provider{
 			"glm-5.1",
 			"glm-5",
 			"kimi-k2.6",
-		},
-	},
-	{
-		Name:        "ollama-cloud",
-		DisplayName: "Ollama Cloud API",
-		Protocol:    "openai",
-		BaseURL:     "https://ollama.com/v1",
-		EnvVar:      "OLLAMA_API_KEY",
-		Models: []string{
-			"gpt-oss:120b",
-			"gpt-oss:20b",
 		},
 	},
 }
