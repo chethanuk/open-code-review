@@ -24,6 +24,8 @@ func (scanRouteClient) CompletionsWithCtx(_ context.Context, req llm.ChatRequest
 	}
 	text := sb.String()
 	switch {
+	case strings.Contains(text, "DO_PANIC"):
+		panic("scan client exploded")
 	case strings.Contains(text, "DO_CANCEL"):
 		return nil, fmt.Errorf("scan call: %w", context.Canceled)
 	case strings.Contains(text, "DO_FAIL"):
@@ -49,6 +51,19 @@ func scanClassCounts(m *session.RunManifest) map[string]int {
 		out[f.Class]++
 	}
 	return out
+}
+
+// The scan fingerprint must be content-sensitive: the same path with changed
+// content is a different input, so the manifest's artifact checksum changes.
+func TestScanFingerprintContentSensitive(t *testing.T) {
+	a := scanFingerprint(model.ScanItem{Path: "a.go", Content: "v1"})
+	b := scanFingerprint(model.ScanItem{Path: "a.go", Content: "v2"})
+	if a == b {
+		t.Error("fingerprint identical across different file contents")
+	}
+	if a != scanFingerprint(model.ScanItem{Path: "a.go", Content: "v1"}) {
+		t.Error("fingerprint not stable for identical input")
+	}
 }
 
 func TestScanRunManifest_Parity(t *testing.T) {
@@ -99,6 +114,17 @@ func TestScanRunManifest_Parity(t *testing.T) {
 			wantState:     session.StatePartial,
 			wantSelected:  2,
 			wantClasses:   map[string]int{session.FailureCancelled: 1},
+		},
+		{
+			name:      "panic isolated to one file",
+			maxTokens: 100000,
+			items: []model.ScanItem{
+				{Path: "ok.go", Content: "ok", LineCount: 1},
+				{Path: "boom.go", Content: "DO_PANIC", LineCount: 1},
+			},
+			wantState:    session.StatePartial,
+			wantSelected: 2,
+			wantClasses:  map[string]int{session.FailurePanic: 1},
 		},
 		{
 			name:         "token limit skip",
@@ -163,5 +189,42 @@ func TestScanRunManifest_Parity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFilterLargeScansRecordsSkip verifies the content pre-filter records a
+// dropped item as failed/skipped_limit so it stays in the manifest's coverage
+// denominator instead of being silently deselected.
+func TestFilterLargeScansRecordsSkip(t *testing.T) {
+	tpl := makeTemplateWithFullScan()
+	tpl.MaxTokens = 50
+	sess := session.New(t.TempDir(), "", "test", session.SessionOptions{ReviewMode: session.ReviewModeFullScan})
+	a := NewAgent(Args{
+		Template:         tpl,
+		LLMClient:        scanRouteClient{},
+		Model:            "test",
+		CommentCollector: tool.NewCommentCollector(),
+		Tools:            tool.NewRegistry(),
+		Session:          sess,
+	})
+
+	kept := a.filterLargeScans([]model.ScanItem{
+		{Path: "ok.go", Content: "ok", LineCount: 1},
+		{Path: "huge.go", Content: strings.Repeat("word ", 500), LineCount: 1},
+	})
+	if len(kept) != 1 || kept[0].Path != "ok.go" {
+		t.Fatalf("kept = %+v, want only ok.go", kept)
+	}
+
+	sess.Finalize()
+	m := sess.Manifest()
+	if m == nil {
+		t.Fatal("nil manifest")
+	}
+	if len(m.Files.Failed) != 1 || m.Files.Failed[0] != "huge.go" {
+		t.Errorf("failed = %v, want [huge.go]", m.Files.Failed)
+	}
+	if got := scanClassCounts(m); got[session.FailureSkippedLimit] != 1 {
+		t.Errorf("failure classes = %v, want skipped_limit=1", got)
 	}
 }

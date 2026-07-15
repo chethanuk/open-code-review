@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -29,6 +30,7 @@ func TestComputeTerminalState(t *testing.T) {
 		{"cancelled with nothing done", 5, 0, 0, 0, 0, true, StateFailed},
 		{"cancelled with only failures", 5, 0, 0, 2, 0, true, StateFailed},
 		{"cancelled overrides otherwise-complete", 2, 2, 0, 0, 0, true, StatePartial},
+		{"cancelled with only waives", 3, 0, 0, 0, 2, true, StatePartial},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,66 +75,52 @@ func lastJSONLRecord(t *testing.T, path string) map[string]any {
 	return last
 }
 
-func TestFinalizeWritesRunManifest(t *testing.T) {
-	sh := New(t.TempDir(), "main", "test-model", SessionOptions{
-		ReviewMode: ReviewModeRange,
-		DiffFrom:   "base",
-		DiffTo:     "head",
-		RunMeta: RunMeta{
-			OCRVersion:  "1.2.3",
-			Provider:    "anthropic",
-			Concurrency: 4,
-			ConfigHash:  "cfg-hash",
-			RulesHash:   "rules-hash",
-		},
-	})
-	sh.SetSelected([]string{"a.go", "b.go", "c.go"})
+// TestManifestSchemaLock pins the versioned schema contract: the literal
+// version number and the top-level JSON key set. Either changing without the
+// other is a breaking change for downstream readers; this test makes both
+// deliberate.
+func TestManifestSchemaLock(t *testing.T) {
+	if ManifestSchemaVersion != 1 {
+		t.Fatalf("ManifestSchemaVersion = %d; bumping it requires a schema-change review — update this lock and the docs together", ManifestSchemaVersion)
+	}
+
+	sh := New(t.TempDir(), "main", "m", SessionOptions{ReviewMode: ReviewModeRange})
+	sh.SetSelected([]string{"a.go", "b.go"})
 	sh.SetArtifactChecksum("artifact-sum")
 	sh.RecordReviewItemDone("a.go", "a.go", "a.go", "fp-a", nil)
-	sh.RecordReviewItemReused("b.go", "b.go", "b.go", "fp-b", "old-session", nil)
-	sh.RecordReviewItemFailed("c.go", "c.go", "c.go", "fp-c", FailureProviderError, "boom")
+	sh.RecordReviewItemFailed("b.go", "b.go", "b.go", "fp-b", FailureProviderError, "boom")
 	sh.Finalize()
 
-	// In-memory manifest matches what we persisted.
-	m := sh.Manifest()
-	if m == nil {
-		t.Fatal("Manifest() returned nil after Finalize")
-	}
-	if m.State != StatePartial {
-		t.Errorf("state = %q, want partial", m.State)
-	}
-	if m.SchemaVersion != ManifestSchemaVersion {
-		t.Errorf("schema_version = %d", m.SchemaVersion)
-	}
-	if len(m.Files.Selected) != 3 || len(m.Files.Completed) != 1 || len(m.Files.Reused) != 1 || len(m.Files.Failed) != 1 {
-		t.Errorf("coverage = %+v", m.Files)
-	}
-	if len(m.Failures) != 1 || m.Failures[0].Class != FailureProviderError {
-		t.Errorf("failures = %+v", m.Failures)
-	}
-
-	// The LAST JSONL line is the run_manifest record with matching coverage.
-	path, err := SessionFilePath(sh.RepoDir, sh.SessionID)
+	blob, err := json.Marshal(sh.Manifest())
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := lastJSONLRecord(t, path)
-	if rec["type"] != "run_manifest" {
-		t.Fatalf("last record type = %v, want run_manifest", rec["type"])
-	}
-	if rec["state"] != StatePartial {
-		t.Errorf("persisted state = %v", rec["state"])
-	}
-
-	// No token/secret content leaks into the manifest record. The endpoint
-	// token / auth header must never appear anywhere in the serialized line.
-	blob, err := json.Marshal(rec)
-	if err != nil {
+	var rec map[string]any
+	if err := json.Unmarshal(blob, &rec); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []string{"api_key", "auth_token", "sk-ant", "authorization", "x-api-key", "Bearer"} {
-		if strings.Contains(strings.ToLower(string(blob)), strings.ToLower(bad)) {
-			t.Errorf("manifest leaks sensitive token pattern %q: %s", bad, blob)
+	if v, ok := rec["schema_version"].(float64); !ok || v != 1 {
+		t.Errorf("serialized schema_version = %v, want 1", rec["schema_version"])
+	}
+	// Golden top-level key set (omitempty keys included only when populated
+	// here). Adding/renaming a key is a schema change: bump the version.
+	want := []string{
+		"schema_version", "session_id", "repo", "range", "files", "state",
+		"duration_ms", "review_mode", "model", "artifact_sha256", "failures",
+		"started_at", "completed_at",
+	}
+	for _, k := range want {
+		if _, ok := rec[k]; !ok {
+			t.Errorf("manifest missing locked key %q (keys=%v)", k, keysOf(rec))
 		}
 	}
+}
+
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

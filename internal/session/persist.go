@@ -120,7 +120,7 @@ func (jw *jsonlWriter) open() error {
 func (jw *jsonlWriter) writeRecordLocked(rec map[string]any) {
 	data, err := json.Marshal(rec)
 	if err != nil {
-		fmt.Printf("[ocr session] failed to marshal record: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[ocr session] failed to marshal record: %v\n", err)
 		return
 	}
 	jw.writer.Write(data)
@@ -334,12 +334,12 @@ func (jw *jsonlWriter) WriteRunManifest(m *RunManifest) string {
 	}
 	data, err := json.Marshal(m)
 	if err != nil {
-		fmt.Printf("[ocr session] failed to marshal run manifest: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[ocr session] failed to marshal run manifest: %v\n", err)
 		return ""
 	}
 	rec := make(map[string]any)
 	if err := json.Unmarshal(data, &rec); err != nil {
-		fmt.Printf("[ocr session] failed to encode run manifest: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[ocr session] failed to encode run manifest: %v\n", err)
 		return ""
 	}
 
@@ -359,7 +359,9 @@ func (jw *jsonlWriter) WriteRunManifest(m *RunManifest) string {
 	return uuid
 }
 
-// WriteSessionEnd writes the final session_end summary record and closes the file.
+// WriteSessionEnd writes the final session_end summary record. It flushes but
+// does not close the file; Finalize writes the run_manifest after it and then
+// closes via flushAndClose.
 func (jw *jsonlWriter) WriteSessionEnd(duration time.Duration, filesReviewed []string, llmFailures int64) {
 	uuid := generateUUID()
 

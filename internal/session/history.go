@@ -5,6 +5,7 @@ package session
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -169,7 +170,7 @@ func New(repoDir, gitBranch, model string, opts SessionOptions) *SessionHistory 
 
 	p, err := newJSONLWriter(sessionID, repoDir, gitBranch, model, opts)
 	if err != nil {
-		fmt.Printf("[ocr session] warning: failed to create session writer: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[ocr session] warning: failed to create session writer: %v\n", err)
 	} else {
 		sh.persist = p
 		p.WriteSessionStart(sh.StartTime)
@@ -272,8 +273,9 @@ func (sh *SessionHistory) RecordReviewItemWaived(filePath, oldPath, newPath, fin
 }
 
 // SetSelected records the full set of reviewable file paths for this run. It
-// establishes the coverage denominator: selected == completed + reused +
-// failed + waived. Call it after diffs are computed and before dispatch.
+// establishes the coverage denominator: selected is a superset of
+// completed ∪ reused ∪ failed ∪ waived, with equality only for fully-covered
+// runs. Call it after diffs are computed and before dispatch.
 func (sh *SessionHistory) SetSelected(paths []string) {
 	if sh == nil {
 		return
@@ -328,6 +330,13 @@ func (sh *SessionHistory) trackCoverage(set, path string) {
 // the final summary record.
 func (sh *SessionHistory) Finalize() {
 	sh.mu.Lock()
+	if sh.manifest != nil {
+		// Already finalized. The manifest is written exactly once (its
+		// immutability contract), so a second Finalize is a no-op rather than a
+		// duplicate session_end + run_manifest pair on an already-closed file.
+		sh.mu.Unlock()
+		return
+	}
 	sh.EndTime = time.Now()
 	p := sh.persist
 	duration := sh.EndTime.Sub(sh.StartTime)
@@ -343,7 +352,7 @@ func (sh *SessionHistory) Finalize() {
 	if p != nil {
 		// session_end first, then the run_manifest as the final line so the
 		// manifest is always the last record (immutability = written once,
-		// last). WriteRunManifest flushes and closes the file.
+		// last); flushAndClose then closes the file.
 		p.WriteSessionEnd(duration, filesReviewed, failures)
 		p.WriteRunManifest(manifest)
 		p.flushAndClose()

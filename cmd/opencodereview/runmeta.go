@@ -5,10 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/open-code-review/open-code-review/internal/config/rules"
 	"github.com/open-code-review/open-code-review/internal/llm"
 	"github.com/open-code-review/open-code-review/internal/session"
 )
@@ -29,14 +28,14 @@ type configHashInput struct {
 // buildRunMeta assembles the manifest metadata the command layer owns:
 // tool version, provider, config/rules hashes, repo identity, and (for the
 // range/commit paths) the resolved range SHAs.
-func buildRunMeta(ep llm.ResolvedEndpoint, language, ocrVersion, repoDir, customRulePath string, concurrency int, rng resolvedRange) session.RunMeta {
+func buildRunMeta(ep llm.ResolvedEndpoint, language, ocrVersion, repoDir string, resolver rules.Resolver, concurrency int, rng resolvedRange) session.RunMeta {
 	remoteURL, headSHA := repoIdentity(repoDir)
 	return session.RunMeta{
 		OCRVersion:     ocrVersion,
 		Provider:       ep.Protocol,
 		Concurrency:    concurrency,
 		ConfigHash:     computeConfigHash(ep, language),
-		RulesHash:      computeRulesHash(customRulePath, repoDir, ocrVersion),
+		RulesHash:      computeRulesHash(resolver, ocrVersion),
 		RepoRemoteURL:  remoteURL,
 		RepoHeadSHA:    headSHA,
 		RangeFromSHA:   rng.fromSHA,
@@ -76,18 +75,21 @@ func baseURLHost(raw string) string {
 	return u.Host
 }
 
-// computeRulesHash hashes each loaded rule layer as (label + \0 + raw bytes),
-// in a stable order. Missing layers contribute nothing. The embedded system
-// layer has no file, so it contributes label + tool version (it only changes
-// when the binary does).
-//
-// ponytail: reads the rule files by their known paths rather than plumbing raw
-// bytes out of rules.NewResolver — same inputs, no new API surface. If rule
-// loading grows more layers, mirror them here.
-func computeRulesHash(customRulePath, repoDir, ocrVersion string) string {
+// computeRulesHash hashes each loaded rule layer as (label + \0 + canonical
+// JSON of the resolved layer), in a stable order. "Resolved" means rule
+// entries that reference files (e.g. a rule.json entry pointing at team.md)
+// have already been expanded to that file's content by rules.NewResolver, so
+// the hash tracks the effective runtime rules — editing a referenced file
+// changes the hash even though rule.json's bytes do not. Missing layers
+// contribute nothing. The embedded system layer has no file, so it
+// contributes label + tool version (it only changes when the binary does).
+func computeRulesHash(resolver rules.Resolver, ocrVersion string) string {
 	h := sha256.New()
-	add := func(label, path string) {
-		data, err := os.ReadFile(path)
+	add := func(label string, layer *rules.ProjectRule) {
+		if layer == nil {
+			return
+		}
+		data, err := json.Marshal(layer)
 		if err != nil {
 			return
 		}
@@ -95,27 +97,26 @@ func computeRulesHash(customRulePath, repoDir, ocrVersion string) string {
 		h.Write([]byte{0})
 		h.Write(data)
 	}
-	if customRulePath != "" {
-		add("custom", customRulePath)
-	}
-	if repoDir != "" {
-		add("project", filepath.Join(repoDir, ".opencodereview", "rule.json"))
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		add("global", filepath.Join(home, ".opencodereview", "rule.json"))
+	if ul, ok := resolver.(interface {
+		UserLayers() (custom, project, global *rules.ProjectRule)
+	}); ok {
+		custom, project, global := ul.UserLayers()
+		add("custom", custom)
+		add("project", project)
+		add("global", global)
 	}
 	h.Write([]byte("system\x00" + ocrVersion))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// repoIdentity returns the origin remote URL (with userinfo stripped) and the
-// HEAD commit SHA. Both tolerate git failure by returning "".
+// repoIdentity returns the origin remote URL (with userinfo/query redacted)
+// and the HEAD commit SHA. Both tolerate git failure by returning "".
 func repoIdentity(repoDir string) (remoteURL, headSHA string) {
 	if repoDir == "" {
 		return "", ""
 	}
 	if out, err := runGitCmdStdout(repoDir, "remote", "get-url", "origin"); err == nil {
-		remoteURL = stripURLUserinfo(strings.TrimSpace(string(out)))
+		remoteURL = redactRemoteURL(strings.TrimSpace(string(out)))
 	}
 	if out, err := runGitCmdStdout(repoDir, "rev-parse", "HEAD"); err == nil {
 		headSHA = strings.TrimSpace(string(out))
@@ -123,16 +124,20 @@ func repoIdentity(repoDir string) (remoteURL, headSHA string) {
 	return remoteURL, headSHA
 }
 
-// stripURLUserinfo removes a user[:password]@ prefix from a standard URL so a
-// token embedded in an https remote never lands in the manifest. scp-style
-// git remotes (git@host:path) carry no password and parse as opaque, so they
-// pass through unchanged.
-func stripURLUserinfo(raw string) string {
+// redactRemoteURL removes the user[:password]@ prefix and any query/fragment
+// from a standard URL so a token embedded in an https remote (userinfo or
+// ?access_token=…) never lands in the manifest, matching baseURLHost's
+// redaction of the config-hash input. scp-style git remotes (git@host:path)
+// fail url.Parse, carry no password, and pass through unchanged.
+func redactRemoteURL(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil || u.User == nil {
+	if err != nil {
 		return raw
 	}
 	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.RawFragment = ""
 	return u.String()
 }
 

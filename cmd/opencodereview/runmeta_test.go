@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-code-review/open-code-review/internal/config/rules"
 	"github.com/open-code-review/open-code-review/internal/llm"
 )
 
@@ -61,18 +62,20 @@ func TestConfigHashRedaction(t *testing.T) {
 	}
 }
 
-func TestStripURLUserinfo(t *testing.T) {
+func TestRedactRemoteURL(t *testing.T) {
 	tests := []struct {
 		in, want string
 	}{
 		{"https://user:token@github.com/acme/repo.git", "https://github.com/acme/repo.git"},
 		{"https://github.com/acme/repo.git", "https://github.com/acme/repo.git"},
+		{"https://github.com/acme/repo.git?access_token=SECRET", "https://github.com/acme/repo.git"},
+		{"https://user:token@github.com/acme/repo.git?access_token=SECRET#frag", "https://github.com/acme/repo.git"},
 		{"git@github.com:acme/repo.git", "git@github.com:acme/repo.git"}, // scp-style: no password, unchanged
 		{"", ""},
 	}
 	for _, tt := range tests {
-		if got := stripURLUserinfo(tt.in); got != tt.want {
-			t.Errorf("stripURLUserinfo(%q) = %q, want %q", tt.in, got, tt.want)
+		if got := redactRemoteURL(tt.in); got != tt.want {
+			t.Errorf("redactRemoteURL(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }
@@ -94,7 +97,7 @@ func gitInitRepo(t *testing.T) string {
 		}
 	}
 	run("init", "-q")
-	run("remote", "add", "origin", "https://alice:secrettoken@example.com/acme/repo.git")
+	run("remote", "add", "origin", "https://alice:secrettoken@example.com/acme/repo.git?access_token=querysecret")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +109,7 @@ func gitInitRepo(t *testing.T) string {
 func TestRepoIdentityStripsUserinfo(t *testing.T) {
 	dir := gitInitRepo(t)
 	remoteURL, headSHA := repoIdentity(dir)
-	if strings.Contains(remoteURL, "secrettoken") || strings.Contains(remoteURL, "alice:") {
+	if strings.Contains(remoteURL, "secrettoken") || strings.Contains(remoteURL, "alice:") || strings.Contains(remoteURL, "querysecret") {
 		t.Errorf("repo remote URL leaks credentials: %q", remoteURL)
 	}
 	if remoteURL != "https://example.com/acme/repo.git" {
@@ -138,22 +141,46 @@ func TestResolveRangeReturnsSHAs(t *testing.T) {
 }
 
 func TestComputeRulesHashChangesWithLayer(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate the global ~/.opencodereview layer
 	dir := t.TempDir()
-	h1 := computeRulesHash("", dir, "1.0.0")
-	// Adding a project rule file changes the hash.
+	newResolver := func() rules.Resolver {
+		t.Helper()
+		r, _, err := rules.NewResolver(dir, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	writeFile := func(path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h1 := computeRulesHash(newResolver(), "1.0.0")
+
+	// Adding a project rule layer changes the hash.
 	rulesDir := filepath.Join(dir, ".opencodereview")
 	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rulesDir, "rule.json"), []byte(`{"rules":[]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	h2 := computeRulesHash("", dir, "1.0.0")
+	writeFile(filepath.Join(rulesDir, "rule.json"), `{"rules":[{"path":"**/*.go","rule":"team.md"}]}`)
+	writeFile(filepath.Join(dir, "team.md"), "rule text A")
+	h2 := computeRulesHash(newResolver(), "1.0.0")
 	if h1 == h2 {
 		t.Error("rules hash should change when a rule layer appears")
 	}
+
+	// Editing the referenced rule file changes the effective rules, so the
+	// hash must change even though rule.json's own bytes are unchanged.
+	writeFile(filepath.Join(dir, "team.md"), "rule text B")
+	h3 := computeRulesHash(newResolver(), "1.0.0")
+	if h3 == h2 {
+		t.Error("rules hash should change when a referenced rule file changes")
+	}
+
 	// Version bump changes the embedded-system contribution.
-	if computeRulesHash("", dir, "2.0.0") == h2 {
+	if computeRulesHash(newResolver(), "2.0.0") == h3 {
 		t.Error("rules hash should change when tool version changes")
 	}
 }

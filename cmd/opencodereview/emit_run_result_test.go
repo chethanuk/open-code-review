@@ -325,22 +325,30 @@ func TestEmitRunResult_JSONIncludesManifest(t *testing.T) {
 }
 
 // TestLegacyStatusValuesUnchanged locks the legacy `status` field to its
-// pre-manifest values across the warning/error paths. manifest.state is the
-// new machine contract; status must not drift.
+// pre-manifest values across the success/warning/error/no-files paths, and
+// asserts every path still carries the manifest. manifest.state is the new
+// machine contract; status must not drift.
 func TestLegacyStatusValuesUnchanged(t *testing.T) {
-	man := &session.RunManifest{State: session.StatePartial}
 	tests := []struct {
-		name       string
-		warnings   []agent.AgentWarning
-		wantStatus string
+		name              string
+		filesReviewed     int64
+		warnings          []agent.AgentWarning
+		manifestState     string
+		wantStatus        string
+		wantManifestState string
 	}{
-		{"clean success", nil, "success"},
-		{"subtask errors", []agent.AgentWarning{{Type: "subtask_error", File: "a.go", Message: "boom"}}, "completed_with_errors"},
-		{"non-error warnings", []agent.AgentWarning{{Type: "token_threshold_exceeded", Message: "big"}}, "completed_with_warnings"},
+		{"clean success", 2, nil, session.StatePartial, "success", session.StatePartial},
+		{"subtask errors", 2, []agent.AgentWarning{{Type: "subtask_error", File: "a.go", Message: "boom"}}, session.StatePartial, "completed_with_errors", session.StatePartial},
+		{"non-error warnings", 2, []agent.AgentWarning{{Type: "token_threshold_exceeded", Message: "big"}}, session.StatePartial, "completed_with_warnings", session.StatePartial},
+		{"no files skipped", 0, nil, session.StateSkipped, "skipped", session.StateSkipped},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ag := &mockResultProvider{filesReviewed: 2, warnings: tt.warnings, manifest: man}
+			ag := &mockResultProvider{
+				filesReviewed: tt.filesReviewed,
+				warnings:      tt.warnings,
+				manifest:      &session.RunManifest{State: tt.manifestState},
+			}
 			got := captureStdout(t, func() {
 				if err := emitRunResult(context.Background(), ag, nil, time.Now(), "json", "developer", nil); err != nil {
 					t.Fatalf("err: %v", err)
@@ -353,32 +361,10 @@ func TestLegacyStatusValuesUnchanged(t *testing.T) {
 			if out.Status != tt.wantStatus {
 				t.Errorf("status = %q, want %q", out.Status, tt.wantStatus)
 			}
-			if out.Manifest == nil || out.Manifest.State != session.StatePartial {
-				t.Errorf("manifest.state should be present and partial regardless of legacy status")
+			if out.Manifest == nil || out.Manifest.State != tt.wantManifestState {
+				t.Errorf("manifest.state should be present (%q) regardless of legacy status, got %+v", tt.wantManifestState, out.Manifest)
 			}
 		})
-	}
-}
-
-func TestEmitRunResult_JSONNoFilesIncludesManifest(t *testing.T) {
-	ag := &mockResultProvider{
-		filesReviewed: 0,
-		manifest:      &session.RunManifest{State: session.StateSkipped},
-	}
-	got := captureStdout(t, func() {
-		if err := emitRunResult(context.Background(), ag, nil, time.Now(), "json", "developer", nil); err != nil {
-			t.Fatalf("err: %v", err)
-		}
-	})
-	var out jsonOutput
-	if err := json.Unmarshal([]byte(got), &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Status != "skipped" {
-		t.Errorf("status = %q, want skipped", out.Status)
-	}
-	if out.Manifest == nil || out.Manifest.State != session.StateSkipped {
-		t.Errorf("no-files path should still carry the skipped manifest, got %+v", out.Manifest)
 	}
 }
 

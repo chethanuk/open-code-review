@@ -187,7 +187,7 @@ func runScan(args []string) error {
 		lang = rt.AppCfg.Language
 	}
 	// Scan has no diff range; resolvedRange stays empty.
-	runMeta := buildRunMeta(rt.Endpoint, lang, Version, cc.RepoDir, opts.rulePath, opts.concurrency, resolvedRange{})
+	runMeta := buildRunMeta(rt.Endpoint, lang, Version, cc.RepoDir, cc.Resolver, opts.concurrency, resolvedRange{})
 
 	ag := scan.NewAgent(scan.Args{
 		RepoDir:               cc.RepoDir,

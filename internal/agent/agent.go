@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -386,8 +385,9 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 		return nil, fmt.Errorf("all diffs filtered out by token size")
 	}
 	// Establish the coverage denominator and input-identity checksum before
-	// resume/dispatch so the manifest invariant selected == completed + reused
-	// + failed + waived holds.
+	// resume/dispatch so every dispatched outcome lands in a bucket selected
+	// already covers (selected is a superset of completed ∪ reused ∪ failed
+	// ∪ waived; equality only for fully-covered runs).
 	a.recordSelectionAndArtifact()
 	toDispatch := a.applyResume(a.diffs)
 
@@ -567,9 +567,7 @@ func (a *Agent) recordSelectionAndArtifact() {
 		fps = append(fps, reviewItemFingerprint(mode, d))
 	}
 	a.session.SetSelected(selected)
-	sort.Strings(fps)
-	sum := sha256.Sum256([]byte(strings.Join(fps, "\x00")))
-	a.session.SetArtifactChecksum(fmt.Sprintf("%x", sum))
+	a.session.SetArtifactChecksum(session.ArtifactChecksum(fps))
 }
 
 func resumedFromSession(resume *session.ResumeState) string {
@@ -858,8 +856,14 @@ func (a *Agent) filterLargeDiffs(diffs []model.Diff) []model.Diff {
 	for _, d := range diffs {
 		tokens := llm.CountTokens(d.Diff)
 		if tokens > limit {
-			fmt.Fprintf(stdout.Writer(), "[ocr] Skipping %s (~%d tokens exceeds 80%% of max_tokens(%d))\n",
-				d.NewPath, tokens, a.args.Template.MaxTokens)
+			msg := fmt.Sprintf("diff tokens (~%d) exceed 80%% of max_tokens(%d)", tokens, a.args.Template.MaxTokens)
+			fmt.Fprintf(stdout.Writer(), "[ocr] Skipping %s (%s)\n", d.NewPath, msg)
+			// Record the drop so the manifest's coverage denominator still
+			// counts this file (as failed/skipped_limit) instead of silently
+			// deselecting it — mirrors the prompt-level threshold path.
+			a.recordWarning("token_threshold_exceeded", d.NewPath, msg)
+			a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath,
+				reviewItemFingerprint(a.reviewMode(), d), session.FailureSkippedLimit, msg)
 			skipped++
 			continue
 		}

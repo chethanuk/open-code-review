@@ -2,9 +2,23 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"sort"
+	"strings"
 )
+
+// ArtifactChecksum computes the run's input-identity checksum: sha256 over
+// the sorted per-file fingerprints joined with NUL. Order-independent by
+// construction; both the diff-review and full-scan paths feed it so the
+// convention cannot diverge.
+func ArtifactChecksum(fingerprints []string) string {
+	fps := append([]string(nil), fingerprints...)
+	sort.Strings(fps)
+	sum := sha256.Sum256([]byte(strings.Join(fps, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
 
 // Failure classes recorded per failed review item. ClassifyFailure maps a Go
 // error onto one of these; panic and skipped_limit are set explicitly by the
@@ -66,8 +80,11 @@ type ManifestRange struct {
 }
 
 // ManifestFiles holds the per-outcome coverage sets, each a sorted, de-duped
-// list of file paths. selected == completed + reused + failed + waived is the
-// coverage invariant the manifest asserts.
+// list of file paths. selected is the coverage denominator; it is a superset of
+// completed ∪ reused ∪ failed ∪ waived, with equality only for fully-covered
+// runs. A cancelled or budget-truncated run leaves some selected files in no
+// outcome bucket (selected > the sum), which is exactly what yields a "partial"
+// terminal state.
 type ManifestFiles struct {
 	Selected  []string `json:"selected"`
 	Completed []string `json:"completed"`
@@ -124,7 +141,10 @@ func ComputeTerminalState(selected, completed, reused, failed, waived int, cance
 		return StateSkipped
 	}
 	if cancelled {
-		if completed+reused > 0 {
+		// A waive satisfies the coverage contract just like a completed review,
+		// so a cancelled run whose covered items include waives is partial, not
+		// failed.
+		if completed+reused+waived > 0 {
 			return StatePartial
 		}
 		return StateFailed

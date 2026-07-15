@@ -58,18 +58,43 @@ func classCounts(m *session.RunManifest) map[string]int {
 	return out
 }
 
+// newManifestAgent builds an Agent wired to the stub routeClient with the
+// template/tool boilerplate shared by every test in this file. mutate (may be
+// nil) tweaks the Args before construction.
+func newManifestAgent(sess *session.SessionHistory, mainContent string, maxTokens int, mutate func(*Args)) *Agent {
+	args := Args{
+		LLMClient: routeClient{},
+		Model:     "test",
+		Session:   sess,
+		Tools:     tool.NewRegistry(),
+		Template: template.Template{
+			MaxTokens:           maxTokens,
+			MaxToolRequestTimes: 5,
+			MainTask:            template.LlmConversation{Messages: []template.ChatMessage{{Role: "user", Content: mainContent}}},
+		},
+		MainToolDefs: []llm.ToolDef{{Type: "function", Function: llm.FunctionDef{Name: "task_done", Description: "done"}}},
+	}
+	if mutate != nil {
+		mutate(&args)
+	}
+	a := New(args)
+	a.currentDate = "2026-07-15 08:00"
+	return a
+}
+
 func TestRunManifest_Scenarios(t *testing.T) {
 	bigTpl := strings.Repeat("word ", 120) + " {{diff}}"
 
 	tests := []struct {
-		name          string
-		maxTokens     int
-		mainContent   string
-		diffs         []model.Diff
-		markCancelled bool
-		wantState     string
-		wantSelected  int
-		wantClasses   map[string]int
+		name           string
+		maxTokens      int
+		mainContent    string
+		diffs          []model.Diff
+		markCancelled  bool
+		wantState      string
+		wantSelected   int
+		wantClasses    map[string]int
+		wantNoArtifact bool
 	}{
 		{
 			name:         "success",
@@ -132,24 +157,40 @@ func TestRunManifest_Scenarios(t *testing.T) {
 			wantSelected: 1,
 			wantClasses:  map[string]int{session.FailureSkippedLimit: 1},
 		},
+		{
+			// The diff-content pre-filter (filterLargeDiffs) must record the
+			// drop, not silently deselect: an all-filtered run is failed with
+			// skipped_limit failures, never an empty "skipped". No artifact
+			// checksum — nothing was dispatched.
+			name:           "oversized diff pre-filtered is failed not skipped",
+			maxTokens:      50,
+			mainContent:    "review {{diff}}",
+			diffs:          []model.Diff{{NewPath: "huge.go", OldPath: "huge.go", Diff: strings.Repeat("word ", 500), Insertions: 1}},
+			wantState:      session.StateFailed,
+			wantSelected:   1,
+			wantClasses:    map[string]int{session.FailureSkippedLimit: 1},
+			wantNoArtifact: true,
+		},
+		{
+			// Partial pre-filter: the dropped file stays in the coverage
+			// denominator (selected=2) and the run is partial, not complete.
+			name:        "oversized diff pre-filtered alongside success is partial",
+			maxTokens:   50,
+			mainContent: "review {{diff}}",
+			diffs: []model.Diff{
+				{NewPath: "ok.go", OldPath: "ok.go", Diff: "+ok", Insertions: 1},
+				{NewPath: "huge.go", OldPath: "huge.go", Diff: strings.Repeat("word ", 500), Insertions: 1},
+			},
+			wantState:    session.StatePartial,
+			wantSelected: 2,
+			wantClasses:  map[string]int{session.FailureSkippedLimit: 1},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sess := session.New(t.TempDir(), "main", "test", session.SessionOptions{ReviewMode: session.ReviewModeRange})
-			a := New(Args{
-				LLMClient: routeClient{},
-				Model:     "test",
-				Session:   sess,
-				Tools:     tool.NewRegistry(),
-				Template: template.Template{
-					MaxTokens:           tt.maxTokens,
-					MaxToolRequestTimes: 5,
-					MainTask:            template.LlmConversation{Messages: []template.ChatMessage{{Role: "user", Content: tt.mainContent}}},
-				},
-				MainToolDefs: []llm.ToolDef{{Type: "function", Function: llm.FunctionDef{Name: "task_done", Description: "done"}}},
-			})
-			a.currentDate = "2026-07-15 08:00"
+			a := newManifestAgent(sess, tt.mainContent, tt.maxTokens, nil)
 			a.diffs = tt.diffs
 
 			_, _ = a.dispatchSubtasks(context.Background())
@@ -168,7 +209,11 @@ func TestRunManifest_Scenarios(t *testing.T) {
 			if len(m.Files.Selected) != tt.wantSelected {
 				t.Errorf("selected = %v, want %d", m.Files.Selected, tt.wantSelected)
 			}
-			if m.ArtifactSHA256 == "" {
+			if tt.wantNoArtifact {
+				if m.ArtifactSHA256 != "" {
+					t.Errorf("artifact checksum = %q, want empty (nothing dispatched)", m.ArtifactSHA256)
+				}
+			} else if m.ArtifactSHA256 == "" {
 				t.Error("artifact checksum should be recorded")
 			}
 			got := classCounts(m)
@@ -189,22 +234,11 @@ func TestRunManifest_Scenarios(t *testing.T) {
 func TestWaiveCoverage(t *testing.T) {
 	build := func(waive []string) *session.RunManifest {
 		sess := session.New(t.TempDir(), "main", "test", session.SessionOptions{ReviewMode: session.ReviewModeRange})
-		a := New(Args{
-			LLMClient: routeClient{},
-			Model:     "test",
-			Session:   sess,
-			Tools:     tool.NewRegistry(),
-			Template: template.Template{
-				MaxTokens:           100000,
-				MaxToolRequestTimes: 5,
-				MainTask:            template.LlmConversation{Messages: []template.ChatMessage{{Role: "user", Content: "{{diff}}"}}},
-			},
-			MainToolDefs: []llm.ToolDef{{Type: "function", Function: llm.FunctionDef{Name: "task_done"}}},
+		a := newManifestAgent(sess, "{{diff}}", 100000, func(args *Args) {
 			// Resume must be non-nil for applyResume (and thus waive) to run.
-			Resume:     &session.ResumeState{SessionID: "prev", Items: map[string]session.ResumeItem{}},
-			WaivePaths: waive,
+			args.Resume = &session.ResumeState{SessionID: "prev", Items: map[string]session.ResumeItem{}}
+			args.WaivePaths = waive
 		})
-		a.currentDate = "d"
 		a.diffs = []model.Diff{
 			{NewPath: "ok.go", OldPath: "ok.go", Diff: "+ok", Insertions: 1},
 			{NewPath: "flaky.go", OldPath: "flaky.go", Diff: "+DO_FAIL", Insertions: 1},
@@ -242,19 +276,7 @@ func TestWaiveCoverage(t *testing.T) {
 func TestArtifactChecksumStableAndOrderIndependent(t *testing.T) {
 	mk := func(order []model.Diff) string {
 		sess := session.New(t.TempDir(), "main", "test", session.SessionOptions{ReviewMode: session.ReviewModeRange})
-		a := New(Args{
-			LLMClient: routeClient{},
-			Model:     "test",
-			Session:   sess,
-			Tools:     tool.NewRegistry(),
-			Template: template.Template{
-				MaxTokens:           100000,
-				MaxToolRequestTimes: 5,
-				MainTask:            template.LlmConversation{Messages: []template.ChatMessage{{Role: "user", Content: "{{diff}}"}}},
-			},
-			MainToolDefs: []llm.ToolDef{{Type: "function", Function: llm.FunctionDef{Name: "task_done"}}},
-		})
-		a.currentDate = "d"
+		a := newManifestAgent(sess, "{{diff}}", 100000, nil)
 		a.diffs = order
 		a.recordSelectionAndArtifact()
 		sess.Finalize()

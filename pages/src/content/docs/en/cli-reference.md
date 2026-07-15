@@ -89,6 +89,7 @@ staged + unstaged + untracked changes in the current directory's repo.
 | `--commit <sha>` | `-c` | — | Single commit to review (vs its parent). |
 | `--preview` | `-p` | `false` | Run the filter pipeline but skip the LLM. Prints the file list and exclusion reasons. |
 | `--resume <session-id>` | — | — | Resume from a previous compatible range or commit review session. |
+| `--waive <paths>` | — | — | Comma-separated repo-relative paths to waive: skipped but counted as covered. Requires `--resume`. |
 | `--format <fmt>` | `-f` | `text` | `text` (human-readable) or `json` (machine-readable comment array). |
 | `--audience <who>` | — | `human` | `human` streams progress lines; `agent` quiets stdout and prints only the final summary / JSON. |
 | `--background <text>` | `-b` | — | Optional requirement / business context injected into the plan + main prompts. |
@@ -241,6 +242,73 @@ Top-level fields:
 | `warnings` | Optional. Present when one or more sub-agents failed; each entry describes the affected file and the error. |
 | `session_id` | Optional. Present on persisted review runs; pass this to `ocr review --resume <session-id>` when retrying compatible range or commit reviews. |
 | `resume` | Optional. Present on resumed runs with `resumed_from`, `reused_files`, `rerun_files`, `previous_model`, and `current_model`. |
+| `manifest` | Optional. The versioned, immutable run manifest (see below). It is the machine-readable coverage contract; `status` above is the legacy, unchanged display field. |
+
+#### Run manifest
+
+The `manifest` object is the same value persisted as the final `run_manifest`
+line of the session JSONL file, so JSON output and the stored session expose
+identical coverage by construction. It is append-only and written exactly once
+per run.
+
+```json
+{
+  "manifest": {
+    "schema_version": 1,
+    "session_id": "…",
+    "parent_session_id": "…",
+    "repo": { "remote_url": "https://…", "head_sha": "…", "branch": "main", "dir": "/repo" },
+    "review_mode": "range",
+    "range": { "from": "main", "to": "feature", "from_sha": "…", "to_sha": "…" },
+    "ocr_version": "1.2.3",
+    "provider": "anthropic",
+    "model": "claude-opus-4-6",
+    "concurrency": 8,
+    "config_hash": "…",
+    "rules_hash": "…",
+    "artifact_sha256": "…",
+    "files": {
+      "selected":  ["a.go", "b.go"],
+      "completed": ["a.go"],
+      "reused":    [],
+      "failed":    ["b.go"],
+      "waived":    []
+    },
+    "failures": [{ "path": "b.go", "class": "provider_error", "error": "…" }],
+    "state": "partial",
+    "started_at": "2026-07-15T08:00:00Z",
+    "completed_at": "2026-07-15T08:01:12Z",
+    "duration_ms": 72000
+  }
+}
+```
+
+| Field | Notes |
+|---|---|
+| `schema_version` | Manifest schema version (`1`). Bumped only on a breaking field change. |
+| `state` | Terminal state: `complete`, `partial`, `failed`, or `skipped` (see the mapping below). |
+| `files` | Coverage sets, each a sorted path list. `selected` is the coverage denominator — a superset of `completed ∪ reused ∪ failed ∪ waived`, with equality only for fully-covered runs. A cancelled or budget-truncated run leaves some selected files in no outcome bucket, which is what yields `partial`. |
+| `range` | Review range refs and their resolved SHAs: `from`/`to`/`from_sha`/`to_sha` for range reviews, or `commit`/`commit_sha` for single-commit reviews. |
+| `failures` | Per-failed-item typed class: `provider_error`, `timeout`, `cancelled`, `panic`, or `skipped_limit`, plus the error text. |
+| `config_hash` | Hash over an allowlisted, non-secret config subset (provider protocol, model, base-URL host, language, timeout). Stable across API-key rotation. |
+| `rules_hash` | Hash over the loaded rule layers (custom/project/global) plus the embedded system layer version. |
+| `artifact_sha256` | Hash over the sorted per-file fingerprints — proves input identity without persisting source. |
+| `parent_session_id` | Set on resumed runs; links to the session being resumed. A resume may switch provider/model — the new values are recorded here while reused items stay intact. |
+
+No token, auth header, or other credential ever appears in the manifest.
+
+##### State → exit-code mapping
+
+`manifest.state` is the machine contract; it is **independent of the process
+exit code**, which stays `0` for any completed run (including `partial`). Use
+`state` — not the exit code — to gate on partial coverage.
+
+| `state` | Meaning | Exit code |
+|---|---|---|
+| `complete` | Every selected file was completed, reused, or waived; no failures. | `0` |
+| `partial` | Mixed outcome, or cancelled with at least one success. | `0` |
+| `skipped` | Nothing was selected for review. | `0` |
+| `failed` | Every selected file failed, or cancelled with no successes. | `0` (the run itself completed; `1` is reserved for fatal errors like bad flags or an unresolved LLM endpoint) |
 
 When no files were eligible for review, JSON mode emits a `skipped`
 envelope instead so callers can distinguish "no changes" from "no findings":

@@ -102,7 +102,7 @@ func runReview(args []string) error {
 	if rt.AppCfg != nil {
 		lang = rt.AppCfg.Language
 	}
-	runMeta := buildRunMeta(rt.Endpoint, lang, Version, cc.RepoDir, opts.rulePath, opts.concurrency,
+	runMeta := buildRunMeta(rt.Endpoint, lang, Version, cc.RepoDir, cc.Resolver, opts.concurrency,
 		resolveRange(cc.RepoDir, opts.from, opts.to, opts.commit))
 
 	ag := agent.New(agent.Args{

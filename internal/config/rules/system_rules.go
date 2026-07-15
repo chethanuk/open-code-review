@@ -288,6 +288,13 @@ func NewResolver(repoDir, customRulePath string) (Resolver, *FileFilter, error) 
 	}, filter, nil
 }
 
+// UserLayers returns the loaded user rule layers (any may be nil) with file
+// references already resolved to content — the effective rule inputs, for
+// manifest fingerprinting.
+func (r *composedResolver) UserLayers() (custom, project, global *ProjectRule) {
+	return r.custom, r.project, r.global
+}
+
 // buildFileFilter picks the highest-priority layer that has any include/exclude
 // configured. Priority order: custom (--rule) > project > global.
 func buildFileFilter(layers ...*ProjectRule) *FileFilter {
