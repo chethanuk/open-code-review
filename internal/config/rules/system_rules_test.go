@@ -59,6 +59,10 @@ func TestResolve_DefaultRules(t *testing.T) {
 	}{
 		{"src/main/java/com/example/foo.java", "Logic Error Detection"},
 		{"foo.java", "Logic Error Detection"},
+		{"src/main/resources/templates/email.ftl", "Template Injection"},
+		{"foo.ftl", "Template Injection"},
+		{"foo.ftlh", "Template Injection"},
+		{"foo.ftlx", "Template Injection"},
 		{"src/main/resources/mapper/usermapper.xml", "SQL Logic Error Detection"},
 		{"src/main/resources/dao/userdao.xml", "SQL Logic Error Detection"},
 		{"pom.xml", "snapshot"},

@@ -140,6 +140,7 @@ OCR 用 [`bmatcuk/doublestar/v4`](https://pkg.go.dev/github.com/bmatcuk/doublest
 | `.github/**/*.{yaml,yml}` | `github_config.md`——其他 `.github` 配置 YAML。 |
 | `**/*.{yaml,yml}` | `yaml.md` |
 | `**/*.java` | `java.md` |
+| `**/*.{ftl,ftlh,ftlx}` | `freemarker.md`——FreeMarker 模板（SSTI / XSS / null 处理）。 |
 | `**/*.ets` | `arkts.md`——ArkTS / HarmonyOS。 |
 | `**/*.{ts,js,tsx,jsx}` | `ts_js_tsx_jsx.md` |
 | `**/*.{kt}` | `kotlin.md` |

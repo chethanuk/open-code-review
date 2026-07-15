@@ -156,6 +156,7 @@ The embedded `system_rules.json` ships with these patterns (in order):
 | `.github/**/*.{yaml,yml}` | `github_config.md` — other `.github` config YAML. |
 | `**/*.{yaml,yml}` | `yaml.md` |
 | `**/*.java` | `java.md` |
+| `**/*.{ftl,ftlh,ftlx}` | `freemarker.md` — FreeMarker templates (SSTI / XSS / null handling). |
 | `**/*.ets` | `arkts.md` — ArkTS / HarmonyOS. |
 | `**/*.{ts,js,tsx,jsx}` | `ts_js_tsx_jsx.md` |
 | `**/*.{kt}` | `kotlin.md` |

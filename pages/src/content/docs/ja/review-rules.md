@@ -119,6 +119,7 @@ OCR は [`bmatcuk/doublestar/v4`](https://pkg.go.dev/github.com/bmatcuk/doublest
 | `.github/**/*.{yaml,yml}` | `github_config.md`: その他の `.github` 設定 YAML。 |
 | `**/*.{yaml,yml}` | `yaml.md` |
 | `**/*.java` | `java.md` |
+| `**/*.{ftl,ftlh,ftlx}` | `freemarker.md`: FreeMarker テンプレート（SSTI / XSS / null 処理）。 |
 | `**/*.ets` | `arkts.md`: ArkTS / HarmonyOS。 |
 | `**/*.{ts,js,tsx,jsx}` | `ts_js_tsx_jsx.md` |
 | `**/*.{kt}` | `kotlin.md` |
