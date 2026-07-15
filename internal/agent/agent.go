@@ -393,7 +393,7 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 			defer func() {
 				if r := recover(); r != nil {
 					atomic.AddInt64(&a.subtaskFailed, 1)
-					a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath, fingerprint, fmt.Sprintf("panic: %v", r))
+					a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath, fingerprint, session.FailurePanic, fmt.Sprintf("panic: %v", r))
 					fmt.Fprintf(stdout.Writer(), "[ocr] Subtask panic for %s: %v\n%s\n", d.NewPath, r, debug.Stack())
 					telemetry.ErrorEvent(ctx, "subtask.panic", fmt.Errorf("panic: %v", r),
 						telemetry.AnyToAttr("file.path", d.NewPath))
@@ -413,7 +413,7 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 			completed, skipReason, err := a.executeSubtask(fileCtx, d)
 			if err != nil {
 				atomic.AddInt64(&a.subtaskFailed, 1)
-				a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath, fingerprint, err.Error())
+				a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath, fingerprint, session.ClassifyFailure(err), err.Error())
 				fmt.Fprintf(stdout.Writer(), "[ocr] Subtask error for %s: %v\n", d.NewPath, err)
 				telemetry.ErrorEvent(fileCtx, "subtask.error", err,
 					telemetry.AnyToAttr("file.path", d.NewPath))
@@ -422,7 +422,7 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 			}
 			if !completed {
 				if skipReason != "" {
-					a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath, fingerprint, skipReason)
+					a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath, fingerprint, session.FailureSkippedLimit, skipReason)
 				}
 				return
 			}
