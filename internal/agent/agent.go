@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -231,6 +233,9 @@ func (a *Agent) Run(ctx context.Context) ([]model.LlmComment, error) {
 	if len(comments) > 0 {
 		telemetry.RecordCommentsGenerated(ctx, int64(len(comments)))
 	}
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		a.session.MarkCancelled()
+	}
 	a.session.Finalize()
 	return comments, err
 }
@@ -359,6 +364,10 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 	if len(a.diffs) == 0 {
 		return nil, fmt.Errorf("all diffs filtered out by token size")
 	}
+	// Establish the coverage denominator and input-identity checksum before
+	// resume/dispatch so the manifest invariant selected == completed + reused
+	// + failed + waived holds.
+	a.recordSelectionAndArtifact()
 	toDispatch := a.applyResume(a.diffs)
 
 	var wg sync.WaitGroup
@@ -509,6 +518,26 @@ func (a *Agent) reviewMode() string {
 func reviewItemFingerprint(mode string, d model.Diff) string {
 	sum := sha256.Sum256([]byte(mode + "\x00" + d.OldPath + "\x00" + d.NewPath + "\x00" + d.Diff))
 	return fmt.Sprintf("%x", sum)
+}
+
+// recordSelectionAndArtifact records the reviewable file set on the session
+// (coverage denominator) and an artifact checksum over the sorted per-file
+// fingerprints. The checksum proves input identity without persisting source.
+func (a *Agent) recordSelectionAndArtifact() {
+	mode := a.reviewMode()
+	selected := make([]string, 0, len(a.diffs))
+	fps := make([]string, 0, len(a.diffs))
+	for _, d := range a.diffs {
+		if d.IsDeleted {
+			continue
+		}
+		selected = append(selected, effectivePath(d))
+		fps = append(fps, reviewItemFingerprint(mode, d))
+	}
+	a.session.SetSelected(selected)
+	sort.Strings(fps)
+	sum := sha256.Sum256([]byte(strings.Join(fps, "\x00")))
+	a.session.SetArtifactChecksum(fmt.Sprintf("%x", sum))
 }
 
 func resumedFromSession(resume *session.ResumeState) string {
