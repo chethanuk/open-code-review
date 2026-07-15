@@ -349,12 +349,15 @@ func (a *Agent) whyExcluded(it model.ScanItem) model.ExcludeReason {
 	if a.args.FileFilter != nil && a.args.FileFilter.IsUserExcluded(path) {
 		return model.ExcludeUserRule
 	}
+	// User-include is checked before the extension allowlist (matching the
+	// preview/diff path in internal/agent) so an explicit include glob can
+	// admit otherwise-unsupported extensions (e.g. .ftl). See #371.
+	if a.args.FileFilter != nil && a.args.FileFilter.HasInclude() && a.args.FileFilter.IsUserIncluded(path) {
+		return model.ExcludeNone
+	}
 	ext := extFromPath(path)
 	if ext != "" && !allowedext.IsAllowedExt(ext) {
 		return model.ExcludeExtension
-	}
-	if a.args.FileFilter != nil && a.args.FileFilter.HasInclude() && a.args.FileFilter.IsUserIncluded(path) {
-		return model.ExcludeNone
 	}
 	if allowedext.IsExcludedPath(path) {
 		return model.ExcludeDefaultPath
