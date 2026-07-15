@@ -2,8 +2,11 @@ package scan
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -271,6 +274,9 @@ func (a *Agent) Run(ctx context.Context) ([]model.LlmComment, error) {
 	// Project-level summary runs after all batches; never blocks return.
 	a.maybeRunProjectSummary(ctx, comments)
 
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		a.session.MarkCancelled()
+	}
 	a.session.Finalize()
 	return comments, err
 }
@@ -402,6 +408,10 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 		return []model.LlmComment{}, nil
 	}
 
+	// Manifest coverage: the reviewable item set is the denominator, plus an
+	// artifact checksum over the sorted per-file fingerprints.
+	a.recordSelectionAndArtifact()
+
 	atomic.StoreInt64(&a.subtaskFailed, 0)
 
 	strategy := a.resolveBatchStrategy()
@@ -446,6 +456,33 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 		return nil, fmt.Errorf("all %d file scan(s) failed — check your LLM configuration and API key", dispatched)
 	}
 	return a.args.CommentCollector.Comments(), nil
+}
+
+// scanFingerprint derives a stable per-item fingerprint for the manifest.
+//
+// ponytail: content-hash if scan grows resume. Scan has no diff and no resume
+// today, so a path-based fingerprint is enough to identify the item and to
+// compute the artifact checksum; upgrade to hashing it.Content when resume
+// lands on the scan path.
+func scanFingerprint(path string) string {
+	sum := sha256.Sum256([]byte(session.ReviewModeFullScan + "\x00" + path))
+	return fmt.Sprintf("%x", sum)
+}
+
+// recordSelectionAndArtifact records the reviewable item set (coverage
+// denominator) and an order-independent artifact checksum over the sorted
+// per-file fingerprints.
+func (a *Agent) recordSelectionAndArtifact() {
+	selected := make([]string, 0, len(a.items))
+	fps := make([]string, 0, len(a.items))
+	for i := range a.items {
+		selected = append(selected, a.items[i].Path)
+		fps = append(fps, scanFingerprint(a.items[i].Path))
+	}
+	a.session.SetSelected(selected)
+	sort.Strings(fps)
+	sum := sha256.Sum256([]byte(strings.Join(fps, "\x00")))
+	a.session.SetArtifactChecksum(fmt.Sprintf("%x", sum))
 }
 
 // resolveBatchStrategy reads the strategy from the scan template, defaulting
@@ -560,6 +597,8 @@ func (a *Agent) executeSubtask(ctx context.Context, it model.ScanItem) error {
 
 	messages := a.renderMessages(it, rule, planGuidance)
 
+	fingerprint := scanFingerprint(it.Path)
+
 	tokenCount := llmloop.CountMessagesTokens(messages)
 	maxAllowed := a.args.Template.MaxTokens
 	tokenLimit := maxAllowed * 4 / 5
@@ -567,6 +606,7 @@ func (a *Agent) executeSubtask(ctx context.Context, it model.ScanItem) error {
 		msg := fmt.Sprintf("prompt tokens (%d) exceed %d%% of max_tokens(%d)", tokenCount, 80, maxAllowed)
 		fmt.Fprintf(stdout.Writer(), "[ocr] WARNING: %s for %s\n", msg, it.Path)
 		a.recordWarning("token_threshold_exceeded", it.Path, msg)
+		a.session.RecordReviewItemFailed(it.Path, it.Path, it.Path, fingerprint, session.FailureSkippedLimit, msg)
 		telemetry.Event(ctx, "token.threshold.exceeded",
 			telemetry.AnyToAttr("file.path", it.Path),
 			telemetry.AnyToAttr("tokens", tokenCount),
@@ -575,7 +615,13 @@ func (a *Agent) executeSubtask(ctx context.Context, it model.ScanItem) error {
 	}
 
 	_, err := a.runner.RunPerFile(ctx, messages, it.Path)
-	return err
+	if err != nil {
+		a.session.RecordReviewItemFailed(it.Path, it.Path, it.Path, fingerprint, session.ClassifyFailure(err), err.Error())
+		return err
+	}
+	comments := a.args.CommentCollector.CommentsForPath(it.Path)
+	a.session.RecordReviewItemDone(it.Path, it.Path, it.Path, fingerprint, comments)
+	return nil
 }
 
 // maybeRunPlan invokes PLAN_TASK on the file and returns a human-readable
