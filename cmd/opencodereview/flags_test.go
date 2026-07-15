@@ -53,6 +53,19 @@ func TestParseReviewFlags_PreviewWithResume(t *testing.T) {
 	}
 }
 
+func TestParseReviewFlags_WaiveRequiresResume(t *testing.T) {
+	if _, err := parseReviewFlags([]string{"--from", "main", "--to", "feature", "--waive", "a.go"}); err == nil {
+		t.Fatal("expected error for --waive without --resume")
+	}
+	opts, err := parseReviewFlags([]string{"--from", "main", "--to", "feature", "--resume", "s1", "--waive", "a.go,b.go"})
+	if err != nil {
+		t.Fatalf("--waive with --resume should be valid: %v", err)
+	}
+	if opts.waive != "a.go,b.go" {
+		t.Errorf("waive = %q", opts.waive)
+	}
+}
+
 func TestParseReviewFlags_InvalidAudience(t *testing.T) {
 	_, err := parseReviewFlags([]string{"--audience", "robot"})
 	if err == nil {

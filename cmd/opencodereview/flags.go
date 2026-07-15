@@ -102,6 +102,7 @@ type reviewOptions struct {
 	to             string
 	commit         string
 	resume         string
+	waive          string // --waive: comma-separated paths to skip (requires --resume)
 	excludes       string // --exclude: comma-separated gitignore-style patterns
 	outputFormat   string
 	audience       string // --audience: "human" (default) or "agent"
@@ -128,6 +129,7 @@ func parseReviewFlags(args []string) (reviewOptions, error) {
 	a.StringVar(&opts.to, "to", "", "target ref to end diff at (e.g., 'feature-branch')")
 	a.StringVarP(&opts.commit, "commit", "c", "", "single commit hash or tag to review (vs its parent)")
 	a.StringVar(&opts.resume, "resume", "", "resume from a previous review session id")
+	a.StringVar(&opts.waive, "waive", "", "comma-separated paths to waive (skip but count as covered); requires --resume")
 	a.StringVar(&opts.excludes, "exclude", "", "comma-separated gitignore-style patterns to exclude; merged with rule.json excludes")
 	a.StringVarP(&opts.outputFormat, "format", "f", "text", "output format: text or json")
 	a.IntVar(&opts.concurrency, "concurrency", 8, "max concurrent file reviews")
@@ -168,6 +170,13 @@ func parseReviewFlags(args []string) (reviewOptions, error) {
 	}
 	if opts.preview && opts.resume != "" {
 		return opts, fmt.Errorf("--preview and --resume cannot be used together")
+	}
+	// Waiving only makes sense on a resumed run: it deliberately leaves diffs
+	// unreviewed while still satisfying the coverage contract. There is no
+	// fingerprint-addressed or config-file waive — paths only, and only with
+	// --resume. (ponytail: path-scoped waives cover the operator use case.)
+	if opts.waive != "" && opts.resume == "" {
+		return opts, fmt.Errorf("--waive requires --resume")
 	}
 
 	switch opts.audience {
@@ -246,7 +255,8 @@ Flags:
   --rule string                 path to JSON file with system review rules
   --timeout int                 concurrent task timeout in minutes (default 10)
   --to string                   target ref to end diff at (e.g., 'feature-branch')
-  --tools string                path to JSON tools config file (default: embedded)`)
+  --tools string                path to JSON tools config file (default: embedded)
+  --waive string                comma-separated paths to waive (skip but count as covered); requires --resume`)
 }
 
 // --- config subcommand ---

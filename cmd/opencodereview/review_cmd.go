@@ -127,6 +127,7 @@ func runReview(args []string) error {
 		GitRunner:             cc.GitRunner,
 		Resume:                resumeState,
 		RunMeta:               runMeta,
+		WaivePaths:            splitPaths(opts.waive),
 	})
 
 	// Silence progress output during execution; restored before the trace

@@ -125,6 +125,11 @@ type Args struct {
 	// is folded into the run manifest at Finalize. Ignored when Session is
 	// supplied pre-built by the caller.
 	RunMeta session.RunMeta
+
+	// WaivePaths lists repo-relative paths to waive on a resumed run: they are
+	// not dispatched, are recorded as review_item_waived, and count toward
+	// coverage. Only honored alongside Resume (the CLI enforces --resume).
+	WaivePaths []string
 }
 
 // Agent orchestrates the AI-powered code review. LLM tool-use loop / memory
@@ -481,6 +486,11 @@ func (a *Agent) applyResume(diffs []model.Diff) []model.Diff {
 		return diffs
 	}
 
+	waived := make(map[string]struct{}, len(a.args.WaivePaths))
+	for _, p := range a.args.WaivePaths {
+		waived[p] = struct{}{}
+	}
+
 	mode := a.reviewMode()
 	toDispatch := make([]model.Diff, 0, len(diffs))
 	var reused int64
@@ -490,6 +500,12 @@ func (a *Agent) applyResume(diffs []model.Diff) []model.Diff {
 			continue
 		}
 		fingerprint := reviewItemFingerprint(mode, d)
+		// An explicit waive wins over both reuse and re-review: the operator
+		// chose to skip this diff while still satisfying coverage.
+		if _, ok := waived[effectivePath(d)]; ok {
+			a.session.RecordReviewItemWaived(effectivePath(d), d.OldPath, d.NewPath, fingerprint)
+			continue
+		}
 		item, ok := resume.Item(fingerprint)
 		if !ok {
 			toDispatch = append(toDispatch, d)

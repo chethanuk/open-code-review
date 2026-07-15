@@ -184,6 +184,59 @@ func TestRunManifest_Scenarios(t *testing.T) {
 	}
 }
 
+// TestWaiveCoverage verifies a waived diff is not dispatched, is recorded as
+// covered, and flips an otherwise-partial run to complete.
+func TestWaiveCoverage(t *testing.T) {
+	build := func(waive []string) *session.RunManifest {
+		sess := session.New(t.TempDir(), "main", "test", session.SessionOptions{ReviewMode: session.ReviewModeRange})
+		a := New(Args{
+			LLMClient: routeClient{},
+			Model:     "test",
+			Session:   sess,
+			Tools:     tool.NewRegistry(),
+			Template: template.Template{
+				MaxTokens:           100000,
+				MaxToolRequestTimes: 5,
+				MainTask:            template.LlmConversation{Messages: []template.ChatMessage{{Role: "user", Content: "{{diff}}"}}},
+			},
+			MainToolDefs: []llm.ToolDef{{Type: "function", Function: llm.FunctionDef{Name: "task_done"}}},
+			// Resume must be non-nil for applyResume (and thus waive) to run.
+			Resume:     &session.ResumeState{SessionID: "prev", Items: map[string]session.ResumeItem{}},
+			WaivePaths: waive,
+		})
+		a.currentDate = "d"
+		a.diffs = []model.Diff{
+			{NewPath: "ok.go", OldPath: "ok.go", Diff: "+ok", Insertions: 1},
+			{NewPath: "flaky.go", OldPath: "flaky.go", Diff: "+DO_FAIL", Insertions: 1},
+		}
+		_, _ = a.dispatchSubtasks(context.Background())
+		sess.Finalize()
+		return sess.Manifest()
+	}
+
+	// No waive: the failing diff leaves the run partial.
+	noWaive := build(nil)
+	if noWaive.State != session.StatePartial {
+		t.Errorf("without waive: state = %q, want partial (files=%+v)", noWaive.State, noWaive.Files)
+	}
+
+	// Waiving the failing diff flips the run to complete and records it as
+	// waived rather than dispatched/failed.
+	waived := build([]string{"flaky.go"})
+	if waived.State != session.StateComplete {
+		t.Errorf("with waive: state = %q, want complete (files=%+v)", waived.State, waived.Files)
+	}
+	if len(waived.Files.Waived) != 1 || waived.Files.Waived[0] != "flaky.go" {
+		t.Errorf("waived set = %v, want [flaky.go]", waived.Files.Waived)
+	}
+	if len(waived.Files.Failed) != 0 {
+		t.Errorf("waived diff must not be recorded as failed: %v", waived.Files.Failed)
+	}
+	if len(waived.Files.Completed) != 1 || waived.Files.Completed[0] != "ok.go" {
+		t.Errorf("completed set = %v, want [ok.go]", waived.Files.Completed)
+	}
+}
+
 // TestArtifactChecksumStableAndOrderIndependent verifies the artifact hash is
 // deterministic regardless of diff ordering (fingerprints are sorted).
 func TestArtifactChecksumStableAndOrderIndependent(t *testing.T) {

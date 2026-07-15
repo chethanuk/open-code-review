@@ -111,7 +111,9 @@ func (s *ResumeState) applyResumeLine(line []byte) error {
 	switch rec.Type {
 	case "session_start":
 		s.applySessionStart(rec)
-	case "review_item_done", "review_item_reused":
+	case "review_item_done", "review_item_reused", "review_item_waived":
+		// A waived item counts as covered for later resumes: index it like a
+		// completed item (empty comments) so a subsequent resume skips it.
 		if rec.Fingerprint == "" {
 			return nil
 		}
