@@ -19,11 +19,17 @@ pipeline {
     agent any
 
     environment {
+        // ocr resolves OCR_LLM_URL / OCR_LLM_TOKEN / OCR_LLM_MODEL directly
+        // from the environment (no `ocr config set`), so the token stays
+        // env-only and is never written to disk on a shared agent.
         OCR_LLM_URL = 'https://api.openai.com/v1/chat/completions'
-        OCR_LLM_AUTH_TOKEN = credentials('ocr-llm-auth-token')
-        // Optional: OCR_LLM_MODEL (e.g. gpt-4o). GERRIT_URL: set here or in
-        // Jenkins global env; if unset, post_review.py derives it from the
-        // injected GERRIT_CHANGE_URL.
+        OCR_LLM_MODEL = 'gpt-4o'
+        OCR_LLM_TOKEN = credentials('ocr-llm-auth-token')
+        // The env resolver defaults to the Anthropic protocol; this is an
+        // OpenAI chat-completions endpoint.
+        OCR_USE_ANTHROPIC = 'false'
+        // GERRIT_URL: set here or in Jenkins global env; if unset,
+        // post_review.py derives it from the injected GERRIT_CHANGE_URL.
     }
 
     stages {
@@ -44,18 +50,18 @@ pipeline {
 
         stage('Install OCR') {
             steps {
-                sh 'npm install -g @alibaba-group/open-code-review'
-                sh '''
-                    ocr config set llm.url "$OCR_LLM_URL"
-                    ocr config set llm.auth_token "$OCR_LLM_AUTH_TOKEN"
-                    if [ -n "$OCR_LLM_MODEL" ]; then
-                      ocr config set llm.model "$OCR_LLM_MODEL"
-                    fi
-                    ocr config set llm.use_anthropic false
-                    # Only for providers that accept a top-level "thinking"
-                    # field (e.g. DashScope/GLM); OpenAI rejects unknown fields.
-                    # ocr config set llm.extra_body '{"thinking": {"type": "disabled"}}'
-                '''
+                // Pin the version you have validated; bump deliberately.
+                sh 'npm install -g @alibaba-group/open-code-review@1.7.12'
+                // extra_body has no env-var equivalent. Providers that accept
+                // a top-level "thinking" field (e.g. DashScope/GLM; OpenAI
+                // rejects unknown fields) must fall back to the config file,
+                // which then needs the full triple (the config-file strategy
+                // resolves url/token/model together, ignoring the env vars):
+                //   ocr config set llm.url/auth_token/model/use_anthropic ...
+                //   ocr config set llm.extra_body '{"thinking": {"type": "disabled"}}'
+                // That writes the token to ~/.opencodereview/config.json, so on
+                // a shared agent clean it up with:
+                //   post { always { sh 'rm -f ~/.opencodereview/config.json' } }
             }
         }
 

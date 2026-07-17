@@ -11,6 +11,7 @@ The transport tests drive main() through a Recorder fake poster, so the whole
 flag/env/error-handling flow is exercised without any HTTP.
 """
 
+import base64
 import contextlib
 import io
 import json
@@ -344,6 +345,18 @@ class PostTest(unittest.TestCase):
         self.assertIn("***", err)
         self.assertNotIn(PASSWORD, out)
         self.assertNotIn(PASSWORD, err)
+
+    def test_b64_credentials_never_in_error_body(self):
+        # Echoed Authorization header: base64(user:password) decodes trivially.
+        creds = base64.b64encode(
+            ("review-bot:" + PASSWORD).encode("utf-8")
+        ).decode("ascii")
+        body = ("echoed header: Basic " + creds).encode("utf-8")
+        rc, _rec, out, err = self.run_main(outcomes=[http_error(401, body)])
+        self.assertEqual(rc, 2)
+        self.assertIn("***", err)
+        self.assertNotIn(creds, out)
+        self.assertNotIn(creds, err)
 
     def test_not_found_404(self):
         rc, _rec, _out, err = self.run_main(outcomes=[http_error(404, b"Not found")])

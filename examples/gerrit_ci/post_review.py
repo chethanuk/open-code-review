@@ -247,8 +247,15 @@ def load_review_result(path):
     return result
 
 
-def scrub(text, password):
-    """Never let the HTTP password reach CI logs, even via echoed error bodies."""
+def scrub(text, password, user=""):
+    """Never let the HTTP credentials reach CI logs, even via echoed error bodies."""
+    if password:
+        # Servers/proxies that echo the Authorization header would leak the
+        # base64(user:password) form, which decodes trivially; scrub it too.
+        b64 = base64.b64encode(
+            ("%s:%s" % (user, password)).encode("utf-8")
+        ).decode("ascii")
+        text = text.replace(b64, "***")
     # A very short "password" (misconfiguration) would mangle unrelated
     # diagnostics, e.g. "Operation" -> "O***eration"; skip it.
     if not password or len(password) < 4:
@@ -338,7 +345,7 @@ def main(argv=None):
     try:
         post(review_input)
     except urllib.error.HTTPError as e:
-        body = scrub(read_error_body(e), password)
+        body = scrub(read_error_body(e), password, user)
         if e.code in (401, 403):
             log("error: Gerrit rejected the credentials (HTTP %d). Use the "
                 "HTTP password from Settings > HTTP Credentials, not the "
@@ -359,7 +366,7 @@ def main(argv=None):
             try:
                 post(fold_comments(review_input))
             except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as e2:
-                log("error: fallback post failed: %s" % scrub(str(e2), password))
+                log("error: fallback post failed: %s" % scrub(str(e2), password, user))
                 return 2
             print("Posted review to change %s (inline comments folded into "
                   "summary)." % change)
@@ -369,12 +376,12 @@ def main(argv=None):
             return 2
     except urllib.error.URLError as e:
         log("error: cannot reach Gerrit at %s (check GERRIT_URL): %s"
-            % (endpoint, scrub(str(e.reason), password)))
+            % (endpoint, scrub(str(e.reason), password, user)))
         return 2
     except ValueError as e:
         log("error: response from %s was not Gerrit JSON; check the GERRIT_URL "
             "scheme (http vs https) and any redirects: %s"
-            % (endpoint, scrub(str(e), password)))
+            % (endpoint, scrub(str(e), password, user)))
         return 2
 
     total = len(result.get("comments") or [])

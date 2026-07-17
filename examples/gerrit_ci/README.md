@@ -32,7 +32,7 @@ The bot only needs to read changes and comment on them. In the project's (or `Al
 
 ### 3. Configure the pipeline
 
-Copy `post_review.py` into your repository (or fetch it in the job) and wire it into your Jenkins job — see the [`Jenkinsfile`](Jenkinsfile) in this directory. Store `GERRIT_HTTP_USER` / `GERRIT_HTTP_PASSWORD` as Jenkins credentials, plus the usual `OCR_LLM_URL` / `OCR_LLM_AUTH_TOKEN` for the review step itself.
+Copy `post_review.py` into your repository (or fetch it in the job) and wire it into your Jenkins job — see the [`Jenkinsfile`](Jenkinsfile) in this directory. Store `GERRIT_HTTP_USER` / `GERRIT_HTTP_PASSWORD` as Jenkins credentials, plus the LLM API token for the review step itself. `ocr` resolves `OCR_LLM_URL` / `OCR_LLM_TOKEN` / `OCR_LLM_MODEL` directly from the environment — no `ocr config set` needed, so the token is never written to disk on a shared agent.
 
 ## Configuration Reference
 
