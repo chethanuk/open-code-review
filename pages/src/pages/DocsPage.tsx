@@ -11,6 +11,16 @@ import docContentsIcon from '../assets/icons/doc-contents.svg';
 import searchIcon from '../assets/icons/icon-search.svg';
 import '../styles/docs-markdown.css';
 
+// marked percent-encodes non-ASCII hrefs; heading ids are raw text from
+// generateHeadingId, so fragments must be decoded before lookup.
+function decodeFragment(fragment: string): string {
+  try {
+    return decodeURIComponent(fragment);
+  } catch {
+    return fragment;
+  }
+}
+
 /* ─── Sidebar tree data ─── */
 interface SidebarItem {
   id: string;
@@ -198,7 +208,7 @@ const DocsPage: React.FC = () => {
     // Skip pure anchors (same-page scroll)
     if (href.startsWith('#')) {
       e.preventDefault();
-      const id = href.slice(1);
+      const id = decodeFragment(href.slice(1));
       const el = document.getElementById(id);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       return;
@@ -217,7 +227,8 @@ const DocsPage: React.FC = () => {
       e.preventDefault();
       navigateToDoc(slug);
       // Handle anchor scroll after navigation with reliable retry
-      const anchor2 = href.split('#')[1];
+      const anchor2raw = href.split('#')[1];
+      const anchor2 = anchor2raw ? decodeFragment(anchor2raw) : undefined;
       if (anchor2) {
         const tryScroll = (attempts: number) => {
           const el = document.getElementById(anchor2);

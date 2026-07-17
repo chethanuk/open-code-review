@@ -68,6 +68,43 @@ ocr config set custom_providers.my-gateway.model    llama-3-70b
 ocr config set custom_providers.my-gateway.api_key  "$MY_API_KEY"
 ```
 
+用 Ollama 跑本地模型，就是一个指向本地 OpenAI 兼容端点的自定义 provider：
+
+```bash
+ocr config set provider                          ollama
+ocr config set custom_providers.ollama.url       http://127.0.0.1:11434/v1
+ocr config set custom_providers.ollama.protocol  openai
+ocr config set custom_providers.ollama.model     qwen3:32b
+ocr config set custom_providers.ollama.api_key   ollama
+```
+
+Ollama 会忽略 API key，但自定义 provider 要求非空的 `api_key`（自定义
+provider 没有环境变量回退），所以设任意占位值即可。模型本身必须支持原生
+工具调用——选型前请先看 FAQ 中的
+["No tool calls parsed"（本地模型 / Ollama）](../faq/#no-tool-calls-parsed-本地模型-ollama)。
+
+### 超时
+
+每个 LLM 请求都有 HTTP 超时，默认 **300 秒**。慢的本地模型（或大文件）可能
+需要更长的时间。三个配置项，作用域递增：
+
+- `providers.<name>.timeout_sec` / `custom_providers.<name>.timeout_sec`
+  ——per-provider，单位秒。
+- `llm.timeout_sec`——用于旧版 `llm` 配置段，单位秒。
+- `OCR_LLM_TIMEOUT` 环境变量——整数秒；对每条解析路径都覆盖配置文件里
+  的值。
+
+`ocr config set` 不支持 `timeout_sec` key——直接编辑
+`~/.opencodereview/config.json`：
+
+```json
+{
+  "custom_providers": {
+    "ollama": { "url": "http://127.0.0.1:11434/v1", "protocol": "openai", "timeout_sec": 900 }
+  }
+}
+```
+
 ### 验证连通性
 
 ```bash

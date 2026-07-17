@@ -72,6 +72,47 @@ ocr config set custom_providers.my-gateway.model    llama-3-70b
 ocr config set custom_providers.my-gateway.api_key  "$MY_API_KEY"
 ```
 
+A local model served by Ollama is just a custom provider pointing at the
+local OpenAI-compatible endpoint:
+
+```bash
+ocr config set provider                          ollama
+ocr config set custom_providers.ollama.url       http://127.0.0.1:11434/v1
+ocr config set custom_providers.ollama.protocol  openai
+ocr config set custom_providers.ollama.model     qwen3:32b
+ocr config set custom_providers.ollama.api_key   ollama
+```
+
+Ollama ignores the API key, but custom providers require a non-empty
+`api_key` (there is no environment-variable fallback for them), so set
+any placeholder value. The model itself must support native tool
+calling — see
+["No tool calls parsed" (local models / Ollama)](../faq/#no-tool-calls-parsed-local-models-ollama)
+in the FAQ before picking one.
+
+### Timeouts
+
+Each LLM request has an HTTP timeout, defaulting to **300 seconds**.
+Slow local models (or large files) can need more. Three knobs, in
+increasing scope:
+
+- `providers.<name>.timeout_sec` / `custom_providers.<name>.timeout_sec`
+  — per-provider, in seconds.
+- `llm.timeout_sec` — for the legacy `llm` section, in seconds.
+- `OCR_LLM_TIMEOUT` environment variable — integer seconds; overrides
+  the config-file value for every resolution path.
+
+The `timeout_sec` keys are not supported by `ocr config set` — edit
+`~/.opencodereview/config.json` directly:
+
+```json
+{
+  "custom_providers": {
+    "ollama": { "url": "http://127.0.0.1:11434/v1", "protocol": "openai", "timeout_sec": 900 }
+  }
+}
+```
+
 ### Verify connectivity
 
 ```bash
