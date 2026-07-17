@@ -198,6 +198,7 @@ func TestRenderListName_Inactive(t *testing.T) {
 func TestCloneProviderEntry_WithExtraBody(t *testing.T) {
 	orig := ProviderEntry{
 		APIKey:     "key",
+		APIKeyCmd:  "op read op://dev/anthropic/api-key",
 		URL:        "http://localhost",
 		Protocol:   "openai",
 		Model:      "gpt-4",
@@ -209,6 +210,9 @@ func TestCloneProviderEntry_WithExtraBody(t *testing.T) {
 
 	if clone.APIKey != orig.APIKey || clone.URL != orig.URL || clone.Protocol != orig.Protocol {
 		t.Error("basic fields not copied")
+	}
+	if clone.APIKeyCmd != orig.APIKeyCmd {
+		t.Errorf("APIKeyCmd not copied: got %q, want %q", clone.APIKeyCmd, orig.APIKeyCmd)
 	}
 	if len(clone.Models) != 2 || clone.Models[0] != "gpt-4" {
 		t.Errorf("Models not cloned: %v", clone.Models)
