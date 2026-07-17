@@ -261,13 +261,18 @@ func (p *Provider) computeMergeBase(ctx context.Context, from, to string) string
 }
 
 func (p *Provider) workspaceTrackedDiff(ctx context.Context) (string, error) {
-	out, err := p.runGit(ctx, "-c", "core.quotepath=false", "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "HEAD", "--")
+	out, err := p.runGit(ctx, "-c", "core.quotepath=false", "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--end-of-options", "HEAD", "--")
 	if err == nil && out != "" {
 		return out, nil
 	}
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
+	// Fall back to the staged diff when `git diff HEAD` errored or was empty. This is
+	// not redundant with the call above: in a repository with no commits yet there is no
+	// HEAD, so `git diff HEAD` fails with "bad revision 'HEAD'", but `git diff --staged`
+	// still surfaces staged changes by diffing the index against the empty tree — the only
+	// way to review a workspace before its first commit.
 	return p.runGit(ctx, "-c", "core.quotepath=false", "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "-U"+fmt.Sprint(DiffContextLines), "--staged", "--")
 }
 
