@@ -18,6 +18,7 @@ func TestResolveKeyCmd(t *testing.T) {
 		{name: "success", cmd: "printf 'sk-test\\n'", want: "sk-test"},
 		{name: "trailing whitespace trimmed", cmd: "printf '  sk-test  \\n'", want: "sk-test"},
 		{name: "no trailing newline", cmd: "printf 'sk-test'", want: "sk-test"},
+		{name: "crlf line ending trimmed", cmd: "printf 'sk-crlf\\r\\n'", want: "sk-crlf"},
 		{name: "non-zero exit", cmd: "exit 3", wantErr: "failed: exit status 3"},
 		{name: "false", cmd: "false", wantErr: "failed:"},
 		{name: "empty output", cmd: "true", wantErr: "produced empty output"},

@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,86 @@ func TestResolveEndpoint_ProviderStaticKeyWinsOverCmd(t *testing.T) {
 	}
 	if ep.Token != "sk-static" {
 		t.Errorf("Token = %q, want %q (static api_key must win)", ep.Token, "sk-static")
+	}
+}
+
+// captureStderr swaps os.Stderr for a pipe around fn and returns what was written.
+// Output here is tiny, so reading after the writer is closed avoids any pipe-buffer
+// deadlock without a goroutine.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read captured stderr: %v", err)
+	}
+	return string(out)
+}
+
+// (b2) when both api_key and api_key_cmd are set, a warning is emitted on stderr
+// and the resolved token is still the static api_key.
+func TestResolveEndpoint_BothSetWarnsAndUsesStaticKey(t *testing.T) {
+	clearAllEnv(t)
+	cfgPath := writeConfigJSON(t, configFile{
+		Provider: "anthropic",
+		Providers: map[string]providerEntryConfig{
+			"anthropic": {APIKey: "sk-static", APIKeyCmd: "printf 'sk-from-cmd\\n'", Model: "claude-sonnet-4-6"},
+		},
+	})
+	var ep ResolvedEndpoint
+	var err error
+	stderr := captureStderr(t, func() {
+		ep, err = ResolveEndpoint(cfgPath)
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.Token != "sk-static" {
+		t.Errorf("Token = %q, want %q (static api_key must win)", ep.Token, "sk-static")
+	}
+	want := `warning: provider "anthropic" has both api_key and api_key_cmd set; using the static api_key`
+	if !strings.Contains(stderr, want) {
+		t.Errorf("stderr %q does not contain warning %q", stderr, want)
+	}
+}
+
+// (e2) legacy path: both auth_token and auth_token_cmd set -> warning + static wins.
+func TestResolveEndpoint_LegacyBothSetWarnsAndUsesStaticToken(t *testing.T) {
+	clearAllEnv(t)
+	cfgPath := writeConfigJSON(t, configFile{
+		Llm: llmFileConfig{
+			URL:          "https://api.example.com/v1/messages",
+			AuthToken:    "legacy-static",
+			AuthTokenCmd: "printf 'legacy-from-cmd\\n'",
+			Model:        "claude-sonnet-4-6",
+		},
+	})
+	var ep ResolvedEndpoint
+	var err error
+	stderr := captureStderr(t, func() {
+		ep, err = ResolveEndpoint(cfgPath)
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.Token != "legacy-static" {
+		t.Errorf("Token = %q, want %q (static auth_token must win)", ep.Token, "legacy-static")
+	}
+	want := "warning: llm config has both auth_token and auth_token_cmd set; using the static auth_token"
+	if !strings.Contains(stderr, want) {
+		t.Errorf("stderr %q does not contain warning %q", stderr, want)
 	}
 }
 
