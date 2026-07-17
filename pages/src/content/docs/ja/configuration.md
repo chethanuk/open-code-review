@@ -70,6 +70,47 @@ ocr config set custom_providers.my-gateway.model    llama-3-70b
 ocr config set custom_providers.my-gateway.api_key  "$MY_API_KEY"
 ```
 
+Ollama で動かすローカルモデルは、ローカルの OpenAI 互換エンドポイントを
+指すカスタム provider にすぎません。
+
+```bash
+ocr config set provider                          ollama
+ocr config set custom_providers.ollama.url       http://127.0.0.1:11434/v1
+ocr config set custom_providers.ollama.protocol  openai
+ocr config set custom_providers.ollama.model     qwen3:32b
+ocr config set custom_providers.ollama.api_key   ollama
+```
+
+Ollama は API key を無視しますが、カスタム provider は空でない `api_key` を
+必要とします（カスタム provider には環境変数のフォールバックがありません）。
+そのため任意のプレースホルダー値を設定してください。モデル自体はネイティブな
+ツール呼び出しをサポートしている必要があります——選ぶ前に FAQ の
+["No tool calls parsed"（ローカルモデル / Ollama）](../faq/#no-tool-calls-parsed-ollama)を
+参照してください。
+
+### タイムアウト（Timeouts）
+
+各 LLM リクエストには HTTP タイムアウトがあり、デフォルトは **300 秒**です。
+遅いローカルモデル（あるいは大きなファイル）では、それ以上の時間が必要になることがあります。
+スコープの狭い順に、3 つの設定があります。
+
+- `providers.<name>.timeout_sec` / `custom_providers.<name>.timeout_sec`
+  ——provider ごと、秒単位。
+- `llm.timeout_sec`——レガシーな `llm` セクション用、秒単位。
+- `OCR_LLM_TIMEOUT` 環境変数——整数（秒単位）。すべての解決パスで設定ファイルの
+  値を上書きします。
+
+`timeout_sec` key は `ocr config set` ではサポートされていません——
+`~/.opencodereview/config.json` を直接編集してください。
+
+```json
+{
+  "custom_providers": {
+    "ollama": { "url": "http://127.0.0.1:11434/v1", "protocol": "openai", "timeout_sec": 900 }
+  }
+}
+```
+
 ### 接続性を検証する
 
 ```bash
