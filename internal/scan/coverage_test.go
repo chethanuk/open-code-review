@@ -156,6 +156,16 @@ func TestWhyExcluded_AllBranches(t *testing.T) {
 			want:   model.ExcludeNone,
 		},
 		{
+			// #371: a user-include glob must override the built-in extension
+			// allowlist (as it already does on the preview/diff path). A
+			// non-allowlisted extension (.ftl) with a matching include glob
+			// must be included, not rejected as ExcludeExtension.
+			name:   "user include overrides extension allowlist",
+			item:   model.ScanItem{Path: "templates/email.ftl", Content: "x"},
+			filter: &rules.FileFilter{Include: []string{"**/*.ftl"}},
+			want:   model.ExcludeNone,
+		},
+		{
 			name: "default excluded path",
 			item: model.ScanItem{Path: "pkg/handler_test.go", Content: "x"},
 			want: model.ExcludeDefaultPath,
