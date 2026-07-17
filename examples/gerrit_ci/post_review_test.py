@@ -16,6 +16,7 @@ import contextlib
 import io
 import json
 import os
+import socket
 import sys
 import tempfile
 import unittest
@@ -378,6 +379,9 @@ class PostTest(unittest.TestCase):
         fallback = rec.calls[1]
         self.assertNotIn("comments", fallback)
         self.assertIn("nil deref", fallback["message"])
+        # The folded message must not claim comments were posted inline while
+        # explaining they couldn't be placed (see fold_comments).
+        self.assertNotIn("posted as inline comment(s)", fallback["message"])
 
     def test_non_gerrit_response_body(self):
         rc, _rec, _out, err = self.run_main(
@@ -551,6 +555,68 @@ class MakePosterTest(unittest.TestCase):
             {"message": "hi"}, body=b")]}'\n{\"labels\": {\"Code-Review\": 0}}"
         )
         self.assertEqual(parsed, {"labels": {"Code-Review": 0}})
+
+    # ---- bounded retry on transient failures ----
+
+    def post_seq(self, outcomes):
+        """Drive post() over a sequence of per-call fake_urlopen outcomes.
+
+        Each outcome is either the raw response body (bytes, returned) or an
+        Exception (raised). Sleeps are stubbed to a no-op so retries are fast.
+        Returns (calls, result_or_None, raised_or_None).
+        """
+        calls = {"n": 0}
+        outcomes = list(outcomes)
+
+        def fake_urlopen(req, timeout=None):
+            calls["n"] += 1
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return FakeResponse(outcome)
+
+        with mock.patch.object(pr.urllib.request, "urlopen", fake_urlopen), \
+                mock.patch.object(pr, "_sleep", lambda _s: None):
+            post = pr.make_poster(self.ENDPOINT, "review-bot", "s3cret-pass", 30)
+            try:
+                result = post({"message": "hi"})
+            except Exception as e:  # noqa: BLE001 - counted and asserted below
+                return calls["n"], None, e
+            return calls["n"], result, None
+
+    def test_retry_503_then_200(self):
+        n, result, raised = self.post_seq([http_error(503, b"boom"), b")]}'\n{}"])
+        self.assertIsNone(raised)
+        self.assertEqual(result, {})
+        self.assertEqual(n, 2)
+
+    def test_retry_connection_urlerror_then_200(self):
+        conn_err = urllib.error.URLError(ConnectionRefusedError("refused"))
+        n, result, raised = self.post_seq([conn_err, b")]}'\n{}"])
+        self.assertIsNone(raised)
+        self.assertEqual(result, {})
+        self.assertEqual(n, 2)
+
+    def test_retry_503_exhausts_and_propagates(self):
+        n, _result, raised = self.post_seq([http_error(503, b"boom")] * pr.MAX_ATTEMPTS)
+        self.assertIsInstance(raised, urllib.error.HTTPError)
+        self.assertEqual(raised.code, 503)
+        self.assertEqual(n, pr.MAX_ATTEMPTS)
+
+    def test_read_timeout_not_retried(self):
+        # A urlopen read-timeout raises a bare socket.timeout/TimeoutError,
+        # which is ambiguous and must NOT be retried.
+        n, _result, raised = self.post_seq([socket.timeout("timed out"), b")]}'\n{}"])
+        self.assertIsInstance(raised, socket.timeout)
+        self.assertEqual(n, 1)
+
+    def test_4xx_not_retried(self):
+        for code in (400, 409):
+            with self.subTest(code=code):
+                n, _result, raised = self.post_seq([http_error(code, b"nope")])
+                self.assertIsInstance(raised, urllib.error.HTTPError)
+                self.assertEqual(raised.code, code)
+                self.assertEqual(n, 1)
 
 
 if __name__ == "__main__":
