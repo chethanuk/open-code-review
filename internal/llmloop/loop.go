@@ -39,8 +39,9 @@ type Deps struct {
 }
 
 // Runner is a per-session (across files) executor of the LLM tool-use
-// loop. Token counters, warnings, and the optional background compression
-// job are aggregated across every RunPerFile call.
+// loop. Token counters and warnings are aggregated across every RunPerFile
+// call; background memory compression is scoped to each RunPerFile
+// conversation (see compressionState).
 type Runner struct {
 	deps                  Deps
 	totalInputTokens      int64 // atomically updated
@@ -51,8 +52,6 @@ type Runner struct {
 	warnings              []AgentWarning
 	toolCallsMu           sync.Mutex
 	toolCalls             map[string]int64
-	compressionMu         sync.Mutex
-	pendingJob            *compressionJob
 }
 
 // NewRunner returns a Runner bound to the given dependencies.
@@ -153,6 +152,11 @@ func (r *Runner) RunPerFile(ctx context.Context, messages []llm.Message, newPath
 	consecutiveEmptyRounds := 0
 	sessionID := uuid.NewString()
 
+	// Async compression is owned by this conversation alone; the deferred
+	// cancel aborts any job still in flight when the conversation ends.
+	st := &compressionState{}
+	defer r.cancelPendingCompression(st)
+
 	for toolReqCount > 0 {
 		select {
 		case <-ctx.Done():
@@ -250,7 +254,7 @@ func (r *Runner) RunPerFile(ctx context.Context, messages []llm.Message, newPath
 			consecutiveEmptyRounds = 0
 		}
 
-		succeed := r.addNextMessage(ctx, content, calls, results, &messages, newPath)
+		succeed := r.addNextMessage(ctx, content, calls, results, &messages, newPath, st)
 		if !succeed {
 			fmt.Fprintf(stdout.Writer(), "[ocr] Context compression exceeded threshold for %s, stopping.\n", newPath)
 			break
@@ -430,23 +434,18 @@ func (r *Runner) executeToolCall(ctx context.Context, newPath string, call llm.T
 // warning (80%) MaxTokens thresholds. Returns false when even after
 // synchronous compression the conversation is still over the warning
 // threshold — caller should stop the loop in that case.
-func (r *Runner) addNextMessage(ctx context.Context, assistantContent string, toolCalls []llm.ToolCall, results []tool.ToolCallResult, messages *[]llm.Message, filePath string) bool {
+func (r *Runner) addNextMessage(ctx context.Context, assistantContent string, toolCalls []llm.ToolCall, results []tool.ToolCallResult, messages *[]llm.Message, filePath string, st *compressionState) bool {
 	maxAllowed := r.deps.Template.MaxTokens
 	softLimit := int(float64(maxAllowed) * tokenSoftThreshold)
 	warnLimit := int(float64(maxAllowed) * tokenWarningThreshold)
 
-	r.tryApplyPendingCompression(messages)
+	r.tryApplyPendingCompression(st, messages)
 
-	tokenCount := CountMessagesTokens(*messages)
-
-	if tokenCount > warnLimit {
-		r.cancelPendingCompression()
+	// A conversation can already be over the warning threshold before this
+	// round's messages are appended (e.g. an oversized initial prompt).
+	if CountMessagesTokens(*messages) > warnLimit {
+		r.cancelPendingCompression(st)
 		*messages, _ = r.runCompression(ctx, *messages, filePath)
-		tokenCount = CountMessagesTokens(*messages)
-	}
-
-	if tokenCount > softLimit && r.pendingJob == nil {
-		r.triggerAsyncCompression(ctx, *messages, filePath)
 	}
 
 	if len(toolCalls) > 0 {
@@ -461,11 +460,19 @@ func (r *Runner) addNextMessage(ctx context.Context, assistantContent string, to
 
 	finalCount := CountMessagesTokens(*messages)
 	if finalCount > warnLimit {
-		r.cancelPendingCompression()
+		r.cancelPendingCompression(st)
 		*messages, _ = r.runCompression(ctx, *messages, filePath)
+		finalCount = CountMessagesTokens(*messages)
 	}
 
-	return CountMessagesTokens(*messages) < warnLimit
+	// Trigger async compression only after all appends for this update, so
+	// a job is never started and then immediately cancelled by the same
+	// call (#384), and never started when we are about to return false.
+	if finalCount > softLimit && finalCount < warnLimit {
+		r.triggerAsyncCompression(ctx, st, *messages, filePath)
+	}
+
+	return finalCount < warnLimit
 }
 
 // lookupTool returns the provider for a given tool from the registry, or

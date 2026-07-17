@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,6 +40,16 @@ type compressionJob struct {
 	rebuilt     []llm.Message
 	cancel      context.CancelFunc
 	snapshotLen int // message count when the snapshot was taken
+}
+
+// compressionState is the async-compression bookkeeping for a single
+// conversation (one RunPerFile call). The Runner is shared by concurrent
+// per-file goroutines, so this state must not live on the Runner: a shared
+// slot lets one file apply, cancel, or replace another file's compression
+// job (#384).
+type compressionState struct {
+	mu         sync.Mutex
+	pendingJob *compressionJob
 }
 
 // CountMessagesTokens returns the rough token count of msgs by summing the
@@ -252,31 +263,36 @@ func (r *Runner) runCompression(ctx context.Context, msgs []llm.Message, filePat
 	return rebuilt, nil
 }
 
-// triggerAsyncCompression kicks off a background compression job.
-func (r *Runner) triggerAsyncCompression(ctx context.Context, messages []llm.Message, filePath string) {
+// triggerAsyncCompression kicks off a background compression job for the
+// conversation owning st. A no-op when a job is already pending — the
+// check-and-set happens under st.mu so concurrent callers cannot replace
+// (and thereby leak) an in-flight job.
+func (r *Runner) triggerAsyncCompression(ctx context.Context, st *compressionState, messages []llm.Message, filePath string) {
+	st.mu.Lock()
+	if st.pendingJob != nil {
+		st.mu.Unlock()
+		return
+	}
 	msgSnapshot := copyMessages(messages)
-
 	asyncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
-
 	job := &compressionJob{done: make(chan struct{}), cancel: cancel, snapshotLen: len(messages)}
-	r.compressionMu.Lock()
-	r.pendingJob = job
-	r.compressionMu.Unlock()
+	st.pendingJob = job
+	st.mu.Unlock()
 
 	go func() {
 		defer cancel()
 		rebuilt, err := r.runCompression(asyncCtx, msgSnapshot, filePath)
 
-		r.compressionMu.Lock()
-		defer r.compressionMu.Unlock()
+		st.mu.Lock()
+		defer st.mu.Unlock()
 
-		if r.pendingJob != job {
+		if st.pendingJob != job {
 			return // cancelled or superseded
 		}
 		if err != nil {
 			// Compression failed — abandon the job rather than applying a
 			// truncated/unmodified snapshot over live messages.
-			r.pendingJob = nil
+			st.pendingJob = nil
 			close(job.done)
 			return
 		}
@@ -288,10 +304,10 @@ func (r *Runner) triggerAsyncCompression(ctx context.Context, messages []llm.Mes
 // tryApplyPendingCompression checks whether a background compression has
 // completed and swaps the rebuilt messages into place. Returns true if
 // applied.
-func (r *Runner) tryApplyPendingCompression(messages *[]llm.Message) bool {
-	r.compressionMu.Lock()
-	job := r.pendingJob
-	r.compressionMu.Unlock()
+func (r *Runner) tryApplyPendingCompression(st *compressionState, messages *[]llm.Message) bool {
+	st.mu.Lock()
+	job := st.pendingJob
+	st.mu.Unlock()
 
 	if job == nil {
 		return false
@@ -300,8 +316,8 @@ func (r *Runner) tryApplyPendingCompression(messages *[]llm.Message) bool {
 	select {
 	case <-job.done:
 		applied := false
-		r.compressionMu.Lock()
-		if r.pendingJob == job && job.rebuilt != nil {
+		st.mu.Lock()
+		if st.pendingJob == job && job.rebuilt != nil {
 			rebuilt := job.rebuilt
 			// Preserve any messages appended after the snapshot was taken —
 			// the background job only compressed messages[:snapshotLen].
@@ -311,23 +327,24 @@ func (r *Runner) tryApplyPendingCompression(messages *[]llm.Message) bool {
 			*messages = rebuilt
 			applied = true
 		}
-		if r.pendingJob == job {
-			r.pendingJob = nil
+		if st.pendingJob == job {
+			st.pendingJob = nil
 		}
-		r.compressionMu.Unlock()
+		st.mu.Unlock()
 		return applied
 	default:
 		return false
 	}
 }
 
-// cancelPendingCompression aborts any in-flight background compression.
-func (r *Runner) cancelPendingCompression() {
-	r.compressionMu.Lock()
-	defer r.compressionMu.Unlock()
+// cancelPendingCompression aborts the conversation's in-flight background
+// compression, if any.
+func (r *Runner) cancelPendingCompression(st *compressionState) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
 
-	if r.pendingJob != nil {
-		r.pendingJob.cancel()
-		r.pendingJob = nil
+	if st.pendingJob != nil {
+		st.pendingJob.cancel()
+		st.pendingJob = nil
 	}
 }
