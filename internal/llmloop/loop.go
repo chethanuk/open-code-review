@@ -276,8 +276,8 @@ func (r *Runner) executeToolCall(ctx context.Context, newPath string, call llm.T
 			return tool.Of(tool.NotAvailableMsg)
 		}
 		r.recordToolCall(call.Function.Name)
-		var dynArgs map[string]any
-		if err := json.Unmarshal([]byte(call.Function.Arguments), &dynArgs); err != nil {
+		dynArgs, err := parseToolArgs(call.Function.Arguments)
+		if err != nil {
 			return tool.Of(fmt.Sprintf("Error parsing tool arguments for %s: %v", call.Function.Name, err))
 		}
 		telemetry.PrintToolCallStarted(call.Function.Name, dynArgs)
@@ -313,8 +313,8 @@ func (r *Runner) executeToolCall(ctx context.Context, newPath string, call llm.T
 
 	r.recordToolCall(t.Name())
 
-	var args map[string]any
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+	args, err := parseToolArgs(call.Function.Arguments)
+	if err != nil {
 		return tool.Of(fmt.Sprintf("Error parsing tool arguments for %s: %v", t.Name(), err))
 	}
 
@@ -466,6 +466,21 @@ func (r *Runner) addNextMessage(ctx context.Context, assistantContent string, to
 	}
 
 	return CountMessagesTokens(*messages) < warnLimit
+}
+
+// parseToolArgs unmarshals a tool call's raw JSON arguments, always
+// returning a non-nil map on success: some OpenAI-compatible gateways send
+// "arguments": null, which unmarshals to a nil map and would panic on the
+// first write (#382).
+func parseToolArgs(raw string) (map[string]any, error) {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return nil, err
+	}
+	if args == nil {
+		args = make(map[string]any)
+	}
+	return args, nil
 }
 
 // lookupTool returns the provider for a given tool from the registry, or
