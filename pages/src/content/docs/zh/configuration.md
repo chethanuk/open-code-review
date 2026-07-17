@@ -68,6 +68,23 @@ ocr config set custom_providers.my-gateway.model    llama-3-70b
 ocr config set custom_providers.my-gateway.api_key  "$MY_API_KEY"
 ```
 
+### 通过命令获取 API key
+
+除了把 key 直接写进配置文件，还可以用 `api_key_cmd` 在运行时从密钥管理器
+（1Password、`pass`、`gopass` 等）获取。命令去除首尾空白后的单行 stdout 即为
+key。旧版 `llm` 配置块也有对应的 `auth_token_cmd`。
+
+```bash
+ocr config set providers.anthropic.api_key_cmd "op read op://dev/anthropic/api-key"
+```
+
+优先级：静态 `api_key` 始终优先（两者都设置时忽略命令并打印警告）；否则运行
+`api_key_cmd`；只有两者都未设置时，OCR 才回退到 provider 对应的环境变量。
+
+命令在每次 `ocr` 调用时运行一次，且必须成功：非零退出、空输出或多行输出都会
+被视为硬错误（OCR 绝不会静默回退）。命令须在 60 秒内完成。命令的 stderr 会透传
+到你的终端，因此交互式提示（pinentry、Touch ID）仍可正常工作。
+
 ### 验证连通性
 
 ```bash
