@@ -497,6 +497,7 @@ ocr review \
 - [`github_actions/`](./examples/github_actions/) — GitHub Actions 集成示例
 - [`gitlab_ci/`](./examples/gitlab_ci/) — GitLab CI 集成示例
 - [`gitflic_ci/`](./examples/gitflic_ci/) — GitFlic CI 集成示例
+- [`gerrit_ci/`](./examples/gerrit_ci/) — Gerrit (Jenkins / Gerrit Trigger) 集成示例
 
 #### GitHub Action
 

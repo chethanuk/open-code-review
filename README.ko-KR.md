@@ -497,6 +497,7 @@ JSON 출력에서 두 field는 `content`, `start_line` 등과 같은 수준의 s
 - [`github_actions/`](./examples/github_actions/): GitHub Actions 통합 예시
 - [`gitlab_ci/`](./examples/gitlab_ci/): GitLab CI 통합 예시
 - [`gitflic_ci/`](./examples/gitflic_ci/): GitFlic CI 통합 예시
+- [`gerrit_ci/`](./examples/gerrit_ci/): Gerrit (Jenkins / Gerrit Trigger) 통합 예시
 
 #### GitHub Action
 

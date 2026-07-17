@@ -30,10 +30,12 @@ pipeline {
         stage('Checkout') {
             steps {
                 // Fresh workspaces lack the target ref, so fetch the branch
-                // explicitly (ocr diffs against origin/$GERRIT_BRANCH), then
+                // with an explicit refspec that materializes the tracking ref
+                // (ocr diffs against origin/$GERRIT_BRANCH; a bare fetch only
+                // updates FETCH_HEAD when the clone refspec is narrow), then
                 // fetch the patchset ref and check out its revision.
                 sh '''
-                    git fetch origin "$GERRIT_BRANCH"
+                    git fetch origin "+refs/heads/$GERRIT_BRANCH:refs/remotes/origin/$GERRIT_BRANCH"
                     git fetch origin "$GERRIT_REFSPEC"
                     git checkout "$GERRIT_PATCHSET_REVISION"
                 '''
@@ -50,7 +52,9 @@ pipeline {
                       ocr config set llm.model "$OCR_LLM_MODEL"
                     fi
                     ocr config set llm.use_anthropic false
-                    ocr config set llm.extra_body '{"thinking": {"type": "disabled"}}'
+                    # Only for providers that accept a top-level "thinking"
+                    # field (e.g. DashScope/GLM); OpenAI rejects unknown fields.
+                    # ocr config set llm.extra_body '{"thinking": {"type": "disabled"}}'
                 '''
             }
         }
