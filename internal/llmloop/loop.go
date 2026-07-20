@@ -471,7 +471,8 @@ func (r *Runner) addNextMessage(ctx context.Context, assistantContent string, to
 // parseToolArgs unmarshals a tool call's raw JSON arguments, always
 // returning a non-nil map on success: some OpenAI-compatible gateways send
 // "arguments": null, which unmarshals to a nil map and would panic on the
-// first write (#382).
+// first write (#382). An equivalent inline guard exists in internal/llm's
+// buildAnthropicParams; keep the two in sync.
 func parseToolArgs(raw string) (map[string]any, error) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
