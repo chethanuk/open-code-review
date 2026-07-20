@@ -290,10 +290,10 @@ func (r *Runner) triggerAsyncCompression(ctx context.Context, st *compressionSta
 		}
 		if err != nil {
 			// Still the owner, so this is a genuine failure rather than a
-			// deliberate cancel (cancelPendingCompression clears pendingJob
-			// before cancelling, so cancelled jobs fail the ownership check
-			// above and die silently). Abandon the job rather than applying
-			// a truncated/unmodified snapshot over live messages.
+			// deliberate cancel (cancelPendingCompression cancels and clears
+			// pendingJob under the lock, so cancelled jobs fail the ownership
+			// check above and die silently). Abandon the job rather than
+			// applying a truncated/unmodified snapshot over live messages.
 			fmt.Fprintf(stdout.Writer(), "[ocr] Memory compression failed: %v\n", err)
 			st.pendingJob = nil
 			close(job.done)
