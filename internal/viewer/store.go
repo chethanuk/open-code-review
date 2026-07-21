@@ -131,9 +131,10 @@ func peekSession(path string) (SessionSummary, error) {
 	buf := make([]byte, 0, 1024*1024)
 	scanner.Buffer(buf, 10*1024*1024)
 
-	var lastLine []byte
+	var lastLine, prevLine []byte
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		prevLine = lastLine
 		lastLine = append([]byte(nil), line...)
 
 		if summary.Timestamp.IsZero() {
@@ -168,26 +169,36 @@ func peekSession(path string) (SessionSummary, error) {
 		}
 	}
 
-	if len(lastLine) > 0 {
+	// session_end carries the summary fields. It is the last line for legacy
+	// sessions, or the second-to-last line when a run_manifest record follows
+	// it (the manifest is always written immediately after session_end), so
+	// check both candidates newest-first.
+	for _, candidate := range [][]byte{lastLine, prevLine} {
+		if len(candidate) == 0 {
+			continue
+		}
 		var rec map[string]any
-		if err := json.Unmarshal(lastLine, &rec); err == nil {
-			if typ, _ := rec["type"].(string); typ == "session_end" {
-				if dur, ok := rec["duration_seconds"].(float64); ok {
-					summary.DurationSec = dur
-				}
-				if files, ok := rec["files_reviewed"].([]any); ok {
-					summary.FilesReviewed = make([]string, 0, len(files))
-					for _, fv := range files {
-						if s, ok := fv.(string); ok {
-							summary.FilesReviewed = append(summary.FilesReviewed, s)
-						}
-					}
-				}
-				if f, ok := rec["llm_failures"].(float64); ok {
-					summary.LLMFailures = int(f)
+		if err := json.Unmarshal(candidate, &rec); err != nil {
+			continue
+		}
+		if typ, _ := rec["type"].(string); typ != "session_end" {
+			continue
+		}
+		if dur, ok := rec["duration_seconds"].(float64); ok {
+			summary.DurationSec = dur
+		}
+		if files, ok := rec["files_reviewed"].([]any); ok {
+			summary.FilesReviewed = make([]string, 0, len(files))
+			for _, fv := range files {
+				if s, ok := fv.(string); ok {
+					summary.FilesReviewed = append(summary.FilesReviewed, s)
 				}
 			}
 		}
+		if f, ok := rec["llm_failures"].(float64); ok {
+			summary.LLMFailures = int(f)
+		}
+		break
 	}
 	summary.FileCount = len(summary.FilesReviewed)
 	return summary, scanner.Err()

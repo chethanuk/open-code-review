@@ -218,6 +218,34 @@ func TestPeekSession(t *testing.T) {
 	}
 }
 
+// TestPeekSession_RunManifestAfterSessionEnd guards the run-manifest ordering
+// change: run_manifest is written as the last line, AFTER session_end. The
+// peek fast path reads only the tail of the file, so it must still find the
+// session_end summary in the second-to-last line rather than giving up because
+// the very last line is a run_manifest.
+func TestPeekSession_RunManifestAfterSessionEnd(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.jsonl")
+	writeJSONL(t, path,
+		`{"type":"session_start","timestamp":"2025-06-15T14:30:00Z","cwd":"/repo","gitBranch":"dev","model":"gpt-4o","reviewMode":"workspace"}`,
+		`{"type":"session_end","duration_seconds":45.2,"files_reviewed":["main.go","util.go"],"llm_failures":2}`,
+		`{"type":"run_manifest","schema_version":1,"state":"partial","files":{"selected":["main.go","util.go"]}}`)
+
+	s, err := peekSession(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.DurationSec != 45.2 {
+		t.Errorf("DurationSec = %f, want 45.2 (session_end must be found even when run_manifest is the last line)", s.DurationSec)
+	}
+	if s.FileCount != 2 {
+		t.Errorf("FileCount = %d, want 2", s.FileCount)
+	}
+	if s.LLMFailures != 2 {
+		t.Errorf("LLMFailures = %d, want 2", s.LLMFailures)
+	}
+}
+
 func TestPeekSession_MissingFile(t *testing.T) {
 	_, err := peekSession("/nonexistent/path/session.jsonl")
 	if err == nil {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/open-code-review/open-code-review/internal/agent"
 	"github.com/open-code-review/open-code-review/internal/model"
+	"github.com/open-code-review/open-code-review/internal/session"
 )
 
 type mockResultProvider struct {
@@ -27,6 +28,7 @@ type mockResultProvider struct {
 	toolCalls        map[string]int64
 	resumeInfo       *agent.ResumeInfo
 	sessionID        string
+	manifest         *session.RunManifest
 }
 
 func (m *mockResultProvider) Diffs() []model.Diff            { return m.diffs }
@@ -41,6 +43,7 @@ func (m *mockResultProvider) ProjectSummary() string         { return m.projectS
 func (m *mockResultProvider) ToolCalls() map[string]int64    { return m.toolCalls }
 func (m *mockResultProvider) ResumeInfo() *agent.ResumeInfo  { return m.resumeInfo }
 func (m *mockResultProvider) SessionID() string              { return m.sessionID }
+func (m *mockResultProvider) Manifest() *session.RunManifest { return m.manifest }
 
 func TestEmitRunResult_JSONNoFiles(t *testing.T) {
 	ag := &mockResultProvider{filesReviewed: 0}
@@ -277,6 +280,91 @@ func TestEmitRunResult_JSONNoFilesTraceID(t *testing.T) {
 	}
 	if out.TraceID != wantTraceID {
 		t.Errorf("trace_id = %q, want %q", out.TraceID, wantTraceID)
+	}
+}
+
+func TestEmitRunResult_JSONIncludesManifest(t *testing.T) {
+	ag := &mockResultProvider{
+		filesReviewed: 3,
+		inputTokens:   10,
+		outputTokens:  5,
+		totalTokens:   15,
+		manifest: &session.RunManifest{
+			SchemaVersion: session.ManifestSchemaVersion,
+			SessionID:     "sess-1",
+			State:         session.StatePartial,
+			Files: session.ManifestFiles{
+				Selected:  []string{"a.go", "b.go"},
+				Completed: []string{"a.go"},
+				Failed:    []string{"b.go"},
+			},
+		},
+	}
+	got := captureStdout(t, func() {
+		if err := emitRunResult(context.Background(), ag, nil, time.Now(), "json", "developer", nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+	var out jsonOutput
+	if err := json.Unmarshal([]byte(got), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Manifest == nil {
+		t.Fatal("manifest missing from JSON output")
+	}
+	if out.Manifest.State != session.StatePartial {
+		t.Errorf("manifest.state = %q, want partial", out.Manifest.State)
+	}
+	if len(out.Manifest.Files.Selected) != 2 {
+		t.Errorf("manifest selected = %v", out.Manifest.Files.Selected)
+	}
+	// Legacy status must remain unchanged (manifest.state is the NEW contract).
+	if out.Status != "success" {
+		t.Errorf("legacy status = %q, want success (unchanged by manifest)", out.Status)
+	}
+}
+
+// TestLegacyStatusValuesUnchanged locks the legacy `status` field to its
+// pre-manifest values across the success/warning/error/no-files paths, and
+// asserts every path still carries the manifest. manifest.state is the new
+// machine contract; status must not drift.
+func TestLegacyStatusValuesUnchanged(t *testing.T) {
+	tests := []struct {
+		name              string
+		filesReviewed     int64
+		warnings          []agent.AgentWarning
+		manifestState     string
+		wantStatus        string
+		wantManifestState string
+	}{
+		{"clean success", 2, nil, session.StatePartial, "success", session.StatePartial},
+		{"subtask errors", 2, []agent.AgentWarning{{Type: "subtask_error", File: "a.go", Message: "boom"}}, session.StatePartial, "completed_with_errors", session.StatePartial},
+		{"non-error warnings", 2, []agent.AgentWarning{{Type: "token_threshold_exceeded", Message: "big"}}, session.StatePartial, "completed_with_warnings", session.StatePartial},
+		{"no files skipped", 0, nil, session.StateSkipped, "skipped", session.StateSkipped},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ag := &mockResultProvider{
+				filesReviewed: tt.filesReviewed,
+				warnings:      tt.warnings,
+				manifest:      &session.RunManifest{State: tt.manifestState},
+			}
+			got := captureStdout(t, func() {
+				if err := emitRunResult(context.Background(), ag, nil, time.Now(), "json", "developer", nil); err != nil {
+					t.Fatalf("err: %v", err)
+				}
+			})
+			var out jsonOutput
+			if err := json.Unmarshal([]byte(got), &out); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if out.Status != tt.wantStatus {
+				t.Errorf("status = %q, want %q", out.Status, tt.wantStatus)
+			}
+			if out.Manifest == nil || out.Manifest.State != tt.wantManifestState {
+				t.Errorf("manifest.state should be present (%q) regardless of legacy status, got %+v", tt.wantManifestState, out.Manifest)
+			}
+		})
 	}
 }
 

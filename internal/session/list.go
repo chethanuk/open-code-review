@@ -34,6 +34,9 @@ type Summary struct {
 	TotalComments  int           `json:"total_comments"`
 	LLMFailures    int64         `json:"llm_failures"`
 	Aborted        bool          `json:"aborted"`
+	// State is the run manifest's terminal state (complete/partial/failed/
+	// skipped) when the session recorded a run_manifest; empty otherwise.
+	State string `json:"state,omitempty"`
 }
 
 // ItemDetail describes one file-level record within a session, used by `ocr session show`.
@@ -72,6 +75,7 @@ type summaryRecord struct {
 	FilesReviewed   []string        `json:"files_reviewed"`
 	DurationSeconds float64         `json:"duration_seconds"`
 	LLMFailures     int64           `json:"llm_failures"`
+	State           string          `json:"state"`
 }
 
 // SessionsDir returns the on-disk directory that holds JSONL session files
@@ -227,6 +231,10 @@ func applyRecordToSummary(s *Summary, rec summaryRecord) {
 		s.TotalComments += countCommentsRaw(rec.Comments)
 	case "review_item_failed":
 		s.FailedFiles++
+	case "run_manifest":
+		if rec.State != "" {
+			s.State = rec.State
+		}
 	case "session_end":
 		s.Aborted = false
 		if s.CompletedFiles == 0 && s.ReusedFiles == 0 && s.FailedFiles == 0 && len(rec.FilesReviewed) > 0 {

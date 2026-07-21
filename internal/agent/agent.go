@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"strings"
@@ -117,6 +118,17 @@ type Args struct {
 
 	// Resume is an optional read-only checkpoint index from a previous review session.
 	Resume *session.ResumeState
+
+	// RunMeta carries cmd-layer-populated run-identity metadata (version,
+	// provider, config/rules hashes, repo identity, resolved range SHAs). It
+	// is folded into the run manifest at Finalize. Ignored when Session is
+	// supplied pre-built by the caller.
+	RunMeta session.RunMeta
+
+	// WaivePaths lists repo-relative paths to waive on a resumed run: they are
+	// not dispatched, are recorded as review_item_waived, and count toward
+	// coverage. Only honored alongside Resume (the CLI enforces --resume).
+	WaivePaths []string
 }
 
 // Agent orchestrates the AI-powered code review. LLM tool-use loop / memory
@@ -163,6 +175,7 @@ func New(args Args) *Agent {
 			DiffTo:      args.To,
 			DiffCommit:  args.Commit,
 			ResumedFrom: resumedFromSession(args.Resume),
+			RunMeta:     args.RunMeta,
 		})
 	}
 	a := &Agent{
@@ -231,6 +244,9 @@ func (a *Agent) Run(ctx context.Context) ([]model.LlmComment, error) {
 	if len(comments) > 0 {
 		telemetry.RecordCommentsGenerated(ctx, int64(len(comments)))
 	}
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		a.session.MarkCancelled()
+	}
 	a.session.Finalize()
 	return comments, err
 }
@@ -238,6 +254,15 @@ func (a *Agent) Run(ctx context.Context) ([]model.LlmComment, error) {
 // Session returns the session history associated with this Agent.
 func (a *Agent) Session() *session.SessionHistory {
 	return a.session
+}
+
+// Manifest returns the run manifest produced at Finalize, or nil before the
+// run completes. Surfaced verbatim in --format json.
+func (a *Agent) Manifest() *session.RunManifest {
+	if a == nil || a.session == nil {
+		return nil
+	}
+	return a.session.Manifest()
 }
 
 // SessionID returns the current review's session id, or "" when no session has been created.
@@ -359,6 +384,11 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 	if len(a.diffs) == 0 {
 		return nil, fmt.Errorf("all diffs filtered out by token size")
 	}
+	// Establish the coverage denominator and input-identity checksum before
+	// resume/dispatch so every dispatched outcome lands in a bucket selected
+	// already covers (selected is a superset of completed ∪ reused ∪ failed
+	// ∪ waived; equality only for fully-covered runs).
+	a.recordSelectionAndArtifact()
 	toDispatch := a.applyResume(a.diffs)
 
 	var wg sync.WaitGroup
@@ -393,7 +423,7 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 			defer func() {
 				if r := recover(); r != nil {
 					atomic.AddInt64(&a.subtaskFailed, 1)
-					a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath, fingerprint, fmt.Sprintf("panic: %v", r))
+					a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath, fingerprint, session.FailurePanic, fmt.Sprintf("panic: %v", r))
 					fmt.Fprintf(stdout.Writer(), "[ocr] Subtask panic for %s: %v\n%s\n", d.NewPath, r, debug.Stack())
 					telemetry.ErrorEvent(ctx, "subtask.panic", fmt.Errorf("panic: %v", r),
 						telemetry.AnyToAttr("file.path", d.NewPath))
@@ -413,7 +443,7 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 			completed, skipReason, err := a.executeSubtask(fileCtx, d)
 			if err != nil {
 				atomic.AddInt64(&a.subtaskFailed, 1)
-				a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath, fingerprint, err.Error())
+				a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath, fingerprint, session.ClassifyFailure(err), err.Error())
 				fmt.Fprintf(stdout.Writer(), "[ocr] Subtask error for %s: %v\n", d.NewPath, err)
 				telemetry.ErrorEvent(fileCtx, "subtask.error", err,
 					telemetry.AnyToAttr("file.path", d.NewPath))
@@ -422,7 +452,7 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 			}
 			if !completed {
 				if skipReason != "" {
-					a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath, fingerprint, skipReason)
+					a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath, fingerprint, session.FailureSkippedLimit, skipReason)
 				}
 				return
 			}
@@ -456,6 +486,11 @@ func (a *Agent) applyResume(diffs []model.Diff) []model.Diff {
 		return diffs
 	}
 
+	waived := make(map[string]struct{}, len(a.args.WaivePaths))
+	for _, p := range a.args.WaivePaths {
+		waived[p] = struct{}{}
+	}
+
 	mode := a.reviewMode()
 	toDispatch := make([]model.Diff, 0, len(diffs))
 	var reused int64
@@ -465,6 +500,12 @@ func (a *Agent) applyResume(diffs []model.Diff) []model.Diff {
 			continue
 		}
 		fingerprint := reviewItemFingerprint(mode, d)
+		// An explicit waive wins over both reuse and re-review: the operator
+		// chose to skip this diff while still satisfying coverage.
+		if _, ok := waived[effectivePath(d)]; ok {
+			a.session.RecordReviewItemWaived(effectivePath(d), d.OldPath, d.NewPath, fingerprint)
+			continue
+		}
 		item, ok := resume.Item(fingerprint)
 		if !ok {
 			toDispatch = append(toDispatch, d)
@@ -509,6 +550,24 @@ func (a *Agent) reviewMode() string {
 func reviewItemFingerprint(mode string, d model.Diff) string {
 	sum := sha256.Sum256([]byte(mode + "\x00" + d.OldPath + "\x00" + d.NewPath + "\x00" + d.Diff))
 	return fmt.Sprintf("%x", sum)
+}
+
+// recordSelectionAndArtifact records the reviewable file set on the session
+// (coverage denominator) and an artifact checksum over the sorted per-file
+// fingerprints. The checksum proves input identity without persisting source.
+func (a *Agent) recordSelectionAndArtifact() {
+	mode := a.reviewMode()
+	selected := make([]string, 0, len(a.diffs))
+	fps := make([]string, 0, len(a.diffs))
+	for _, d := range a.diffs {
+		if d.IsDeleted {
+			continue
+		}
+		selected = append(selected, effectivePath(d))
+		fps = append(fps, reviewItemFingerprint(mode, d))
+	}
+	a.session.SetSelected(selected)
+	a.session.SetArtifactChecksum(session.ArtifactChecksum(fps))
 }
 
 func resumedFromSession(resume *session.ResumeState) string {
@@ -797,8 +856,14 @@ func (a *Agent) filterLargeDiffs(diffs []model.Diff) []model.Diff {
 	for _, d := range diffs {
 		tokens := llm.CountTokens(d.Diff)
 		if tokens > limit {
-			fmt.Fprintf(stdout.Writer(), "[ocr] Skipping %s (~%d tokens exceeds 80%% of max_tokens(%d))\n",
-				d.NewPath, tokens, a.args.Template.MaxTokens)
+			msg := fmt.Sprintf("diff tokens (~%d) exceed 80%% of max_tokens(%d)", tokens, a.args.Template.MaxTokens)
+			fmt.Fprintf(stdout.Writer(), "[ocr] Skipping %s (%s)\n", d.NewPath, msg)
+			// Record the drop so the manifest's coverage denominator still
+			// counts this file (as failed/skipped_limit) instead of silently
+			// deselecting it — mirrors the prompt-level threshold path.
+			a.recordWarning("token_threshold_exceeded", d.NewPath, msg)
+			a.session.RecordReviewItemFailed(d.NewPath, d.OldPath, d.NewPath,
+				reviewItemFingerprint(a.reviewMode(), d), session.FailureSkippedLimit, msg)
 			skipped++
 			continue
 		}

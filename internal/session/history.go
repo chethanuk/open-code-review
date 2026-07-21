@@ -5,6 +5,7 @@ package session
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,6 +50,25 @@ type SessionHistory struct {
 	persist      *jsonlWriter
 	FileSessions map[string]*FileSession
 	llmFailures  int64
+
+	// runMeta carries the cmd-layer-populated manifest metadata (version,
+	// provider, hashes, repo identity, resolved range SHAs). Static for the
+	// life of the run.
+	runMeta RunMeta
+
+	// Coverage sets tracked for the run manifest. Guarded by mu. Each
+	// terminal review item lands in exactly one of completed/reused/failed/
+	// waived; selected is the full reviewable set. sortedKeys yields the
+	// manifest's per-outcome path lists.
+	selected    map[string]struct{}
+	completed   map[string]struct{}
+	reused      map[string]struct{}
+	failed      map[string]struct{}
+	waived      map[string]struct{}
+	failures    []ManifestFailure
+	artifactSHA string
+	cancelled   bool
+	manifest    *RunManifest
 }
 
 // FileSession represents the conversation records for a single file subtask.
@@ -103,6 +123,26 @@ type SessionOptions struct {
 	DiffTo      string
 	DiffCommit  string
 	ResumedFrom string
+	// RunMeta carries cmd-layer-populated manifest metadata. Zero value is
+	// fine; the manifest simply omits the corresponding fields.
+	RunMeta RunMeta
+}
+
+// RunMeta holds the run-identity metadata that only the command layer can
+// populate (tool version, resolved provider, config/rules hashes, repo
+// identity, resolved range SHAs). It is threaded into SessionOptions and
+// folded into the run manifest at Finalize.
+type RunMeta struct {
+	OCRVersion     string
+	Provider       string
+	Concurrency    int
+	ConfigHash     string
+	RulesHash      string
+	RepoRemoteURL  string
+	RepoHeadSHA    string
+	RangeFromSHA   string
+	RangeToSHA     string
+	RangeCommitSHA string
 }
 
 // New creates a new SessionHistory with the given repo directory.
@@ -120,11 +160,17 @@ func New(repoDir, gitBranch, model string, opts SessionOptions) *SessionHistory 
 		ResumedFrom:  opts.ResumedFrom,
 		StartTime:    time.Now(),
 		FileSessions: make(map[string]*FileSession),
+		runMeta:      opts.RunMeta,
+		selected:     make(map[string]struct{}),
+		completed:    make(map[string]struct{}),
+		reused:       make(map[string]struct{}),
+		failed:       make(map[string]struct{}),
+		waived:       make(map[string]struct{}),
 	}
 
 	p, err := newJSONLWriter(sessionID, repoDir, gitBranch, model, opts)
 	if err != nil {
-		fmt.Printf("[ocr session] warning: failed to create session writer: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[ocr session] warning: failed to create session writer: %v\n", err)
 	} else {
 		sh.persist = p
 		p.WriteSessionStart(sh.StartTime)
@@ -161,6 +207,7 @@ func (sh *SessionHistory) RecordReviewItemDone(filePath, oldPath, newPath, finge
 	}
 	if filePath != "" {
 		sh.GetOrCreateFileSession(filePath)
+		sh.trackCoverage("completed", filePath)
 	}
 	if p := sh.persist; p != nil {
 		p.WriteReviewItemDone(filePath, oldPath, newPath, fingerprint, comments)
@@ -177,14 +224,17 @@ func (sh *SessionHistory) RecordReviewItemReused(filePath, oldPath, newPath, fin
 	}
 	if filePath != "" {
 		sh.GetOrCreateFileSession(filePath)
+		sh.trackCoverage("reused", filePath)
 	}
 	if p := sh.persist; p != nil {
 		p.WriteReviewItemReused(filePath, oldPath, newPath, fingerprint, sourceSessionID, comments)
 	}
 }
 
-// RecordReviewItemFailed persists an incomplete file-level checkpoint.
-func (sh *SessionHistory) RecordReviewItemFailed(filePath, oldPath, newPath, fingerprint, errorMsg string) {
+// RecordReviewItemFailed persists an incomplete file-level checkpoint. class
+// is one of the Failure* constants (see ClassifyFailure); it is recorded in
+// the JSONL record and in the run manifest's typed failure list.
+func (sh *SessionHistory) RecordReviewItemFailed(filePath, oldPath, newPath, fingerprint, class, errorMsg string) {
 	if sh == nil {
 		return
 	}
@@ -193,9 +243,86 @@ func (sh *SessionHistory) RecordReviewItemFailed(filePath, oldPath, newPath, fin
 	}
 	if filePath != "" {
 		sh.GetOrCreateFileSession(filePath)
+		sh.mu.Lock()
+		sh.failed[filePath] = struct{}{}
+		sh.failures = append(sh.failures, ManifestFailure{Path: filePath, Class: class, Error: errorMsg})
+		sh.mu.Unlock()
 	}
 	if p := sh.persist; p != nil {
-		p.WriteReviewItemFailed(filePath, oldPath, newPath, fingerprint, errorMsg)
+		p.WriteReviewItemFailed(filePath, oldPath, newPath, fingerprint, class, errorMsg)
+	}
+}
+
+// RecordReviewItemWaived persists a review_item_waived checkpoint for a diff
+// the operator chose to skip on a resumed run. A waive satisfies the coverage
+// contract (counts like a completed item) and is reusable by later resumes.
+func (sh *SessionHistory) RecordReviewItemWaived(filePath, oldPath, newPath, fingerprint string) {
+	if sh == nil {
+		return
+	}
+	if filePath == "" {
+		filePath = newPath
+	}
+	if filePath != "" {
+		sh.GetOrCreateFileSession(filePath)
+		sh.trackCoverage("waived", filePath)
+	}
+	if p := sh.persist; p != nil {
+		p.WriteReviewItemWaived(filePath, oldPath, newPath, fingerprint)
+	}
+}
+
+// SetSelected records the full set of reviewable file paths for this run. It
+// establishes the coverage denominator: selected is a superset of
+// completed ∪ reused ∪ failed ∪ waived, with equality only for fully-covered
+// runs. Call it after diffs are computed and before dispatch.
+func (sh *SessionHistory) SetSelected(paths []string) {
+	if sh == nil {
+		return
+	}
+	sh.mu.Lock()
+	for _, p := range paths {
+		if p != "" {
+			sh.selected[p] = struct{}{}
+		}
+	}
+	sh.mu.Unlock()
+}
+
+// SetArtifactChecksum records the checksum identifying the run's input set
+// (sha256 over the sorted per-file fingerprints). It proves input identity
+// without persisting source.
+func (sh *SessionHistory) SetArtifactChecksum(sum string) {
+	if sh == nil {
+		return
+	}
+	sh.mu.Lock()
+	sh.artifactSHA = sum
+	sh.mu.Unlock()
+}
+
+// MarkCancelled flags the run as cancelled so ComputeTerminalState degrades
+// the state to partial/failed rather than reporting complete.
+func (sh *SessionHistory) MarkCancelled() {
+	if sh == nil {
+		return
+	}
+	sh.mu.Lock()
+	sh.cancelled = true
+	sh.mu.Unlock()
+}
+
+// trackCoverage adds a path to one of the coverage sets under lock.
+func (sh *SessionHistory) trackCoverage(set, path string) {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	switch set {
+	case "completed":
+		sh.completed[path] = struct{}{}
+	case "reused":
+		sh.reused[path] = struct{}{}
+	case "waived":
+		sh.waived[path] = struct{}{}
 	}
 }
 
@@ -203,6 +330,13 @@ func (sh *SessionHistory) RecordReviewItemFailed(filePath, oldPath, newPath, fin
 // the final summary record.
 func (sh *SessionHistory) Finalize() {
 	sh.mu.Lock()
+	if sh.manifest != nil {
+		// Already finalized. The manifest is written exactly once (its
+		// immutability contract), so a second Finalize is a no-op rather than a
+		// duplicate session_end + run_manifest pair on an already-closed file.
+		sh.mu.Unlock()
+		return
+	}
 	sh.EndTime = time.Now()
 	p := sh.persist
 	duration := sh.EndTime.Sub(sh.StartTime)
@@ -211,11 +345,91 @@ func (sh *SessionHistory) Finalize() {
 		filesReviewed = append(filesReviewed, fp)
 	}
 	failures := atomic.LoadInt64(&sh.llmFailures)
+	manifest := sh.buildManifestLocked(duration)
+	sh.manifest = manifest
 	sh.mu.Unlock()
 
 	if p != nil {
+		// session_end first, then the run_manifest as the final line so the
+		// manifest is always the last record (immutability = written once,
+		// last); flushAndClose then closes the file.
 		p.WriteSessionEnd(duration, filesReviewed, failures)
+		p.WriteRunManifest(manifest)
+		p.flushAndClose()
 	}
+}
+
+// buildManifestLocked assembles the immutable run manifest from the tracked
+// coverage sets and run metadata. Caller must hold sh.mu.
+func (sh *SessionHistory) buildManifestLocked(duration time.Duration) *RunManifest {
+	// selected is the coverage denominator; union in the recorded outcomes so
+	// the invariant holds even when SetSelected was not called explicitly.
+	selected := make(map[string]struct{}, len(sh.selected))
+	for p := range sh.selected {
+		selected[p] = struct{}{}
+	}
+	for _, set := range []map[string]struct{}{sh.completed, sh.reused, sh.failed, sh.waived} {
+		for p := range set {
+			selected[p] = struct{}{}
+		}
+	}
+
+	state := ComputeTerminalState(len(selected), len(sh.completed), len(sh.reused),
+		len(sh.failed), len(sh.waived), sh.cancelled)
+
+	m := &RunManifest{
+		SchemaVersion:   ManifestSchemaVersion,
+		SessionID:       sh.SessionID,
+		ParentSessionID: sh.ResumedFrom,
+		Repo: ManifestRepo{
+			RemoteURL: sh.runMeta.RepoRemoteURL,
+			HeadSHA:   sh.runMeta.RepoHeadSHA,
+			Branch:    sh.GitBranch,
+			Dir:       sh.RepoDir,
+		},
+		ReviewMode: sh.ReviewMode,
+		Range: ManifestRange{
+			From:      sh.DiffFrom,
+			To:        sh.DiffTo,
+			Commit:    sh.DiffCommit,
+			FromSHA:   sh.runMeta.RangeFromSHA,
+			ToSHA:     sh.runMeta.RangeToSHA,
+			CommitSHA: sh.runMeta.RangeCommitSHA,
+		},
+		OCRVersion:     sh.runMeta.OCRVersion,
+		Provider:       sh.runMeta.Provider,
+		Model:          sh.Model,
+		Concurrency:    sh.runMeta.Concurrency,
+		ConfigHash:     sh.runMeta.ConfigHash,
+		RulesHash:      sh.runMeta.RulesHash,
+		ArtifactSHA256: sh.artifactSHA,
+		Files: ManifestFiles{
+			Selected:  sortedKeys(selected),
+			Completed: sortedKeys(sh.completed),
+			Reused:    sortedKeys(sh.reused),
+			Failed:    sortedKeys(sh.failed),
+			Waived:    sortedKeys(sh.waived),
+		},
+		Failures:    append([]ManifestFailure(nil), sh.failures...),
+		State:       state,
+		StartedAt:   sh.StartTime.UTC().Format(time.RFC3339),
+		CompletedAt: sh.EndTime.UTC().Format(time.RFC3339),
+		DurationMS:  duration.Milliseconds(),
+	}
+	return m
+}
+
+// Manifest returns the run manifest retained in memory after Finalize, or nil
+// if the session has not been finalized yet. The returned value is the same
+// data written as the last JSONL record, so JSON output and the persisted
+// session expose identical coverage.
+func (sh *SessionHistory) Manifest() *RunManifest {
+	if sh == nil {
+		return nil
+	}
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	return sh.manifest
 }
 
 // AppendTaskRecord adds a new task record to the file session for the given

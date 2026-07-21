@@ -120,7 +120,7 @@ func (jw *jsonlWriter) open() error {
 func (jw *jsonlWriter) writeRecordLocked(rec map[string]any) {
 	data, err := json.Marshal(rec)
 	if err != nil {
-		fmt.Printf("[ocr session] failed to marshal record: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[ocr session] failed to marshal record: %v\n", err)
 		return
 	}
 	jw.writer.Write(data)
@@ -165,20 +165,29 @@ func (jw *jsonlWriter) WriteSessionStart(startTime time.Time) string {
 
 // WriteReviewItemDone writes a file-level resume checkpoint for a completed diff.
 func (jw *jsonlWriter) WriteReviewItemDone(filePath, oldPath, newPath, fingerprint string, comments []model.LlmComment) string {
-	return jw.writeReviewItemRecord("review_item_done", filePath, oldPath, newPath, fingerprint, "", "", comments)
+	return jw.writeReviewItemRecord("review_item_done", filePath, oldPath, newPath, fingerprint, "", "", "", comments)
 }
 
 // WriteReviewItemReused writes a checkpoint reused from a previous session.
 func (jw *jsonlWriter) WriteReviewItemReused(filePath, oldPath, newPath, fingerprint, sourceSessionID string, comments []model.LlmComment) string {
-	return jw.writeReviewItemRecord("review_item_reused", filePath, oldPath, newPath, fingerprint, sourceSessionID, "", comments)
+	return jw.writeReviewItemRecord("review_item_reused", filePath, oldPath, newPath, fingerprint, sourceSessionID, "", "", comments)
 }
 
 // WriteReviewItemFailed writes a file-level checkpoint for a failed diff.
-func (jw *jsonlWriter) WriteReviewItemFailed(filePath, oldPath, newPath, fingerprint, errorMsg string) string {
-	return jw.writeReviewItemRecord("review_item_failed", filePath, oldPath, newPath, fingerprint, "", errorMsg, nil)
+// class is one of the session.Failure* constants; it is persisted as
+// failureClass for downstream classification.
+func (jw *jsonlWriter) WriteReviewItemFailed(filePath, oldPath, newPath, fingerprint, class, errorMsg string) string {
+	return jw.writeReviewItemRecord("review_item_failed", filePath, oldPath, newPath, fingerprint, "", class, errorMsg, nil)
 }
 
-func (jw *jsonlWriter) writeReviewItemRecord(recordType, filePath, oldPath, newPath, fingerprint, sourceSessionID, errorMsg string, comments []model.LlmComment) string {
+// WriteReviewItemWaived writes a checkpoint for a diff the operator waived on
+// a resumed run. It carries no comments and no error; it counts toward
+// coverage and is reusable by later resumes.
+func (jw *jsonlWriter) WriteReviewItemWaived(filePath, oldPath, newPath, fingerprint string) string {
+	return jw.writeReviewItemRecord("review_item_waived", filePath, oldPath, newPath, fingerprint, "", "", "", nil)
+}
+
+func (jw *jsonlWriter) writeReviewItemRecord(recordType, filePath, oldPath, newPath, fingerprint, sourceSessionID, failureClass, errorMsg string, comments []model.LlmComment) string {
 	uuid := generateUUID()
 
 	jw.mu.Lock()
@@ -200,6 +209,9 @@ func (jw *jsonlWriter) writeReviewItemRecord(recordType, filePath, oldPath, newP
 	}
 	if sourceSessionID != "" {
 		rec["sourceSessionId"] = sourceSessionID
+	}
+	if failureClass != "" {
+		rec["failureClass"] = failureClass
 	}
 	if errorMsg != "" {
 		rec["error"] = errorMsg
@@ -312,7 +324,44 @@ func (jw *jsonlWriter) WriteToolCall(filePath string, taskType TaskType, toolNam
 	return uuid
 }
 
-// WriteSessionEnd writes the final session_end summary record and closes the file.
+// WriteRunManifest writes the run_manifest record as a JSONL line. The
+// manifest struct is serialized verbatim (the same value retained in memory
+// and surfaced in --format json), then wrapped with the standard record
+// envelope (uuid/parentUuid/type/sessionId/timestamp).
+func (jw *jsonlWriter) WriteRunManifest(m *RunManifest) string {
+	if m == nil {
+		return ""
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ocr session] failed to marshal run manifest: %v\n", err)
+		return ""
+	}
+	rec := make(map[string]any)
+	if err := json.Unmarshal(data, &rec); err != nil {
+		fmt.Fprintf(os.Stderr, "[ocr session] failed to encode run manifest: %v\n", err)
+		return ""
+	}
+
+	uuid := generateUUID()
+	jw.mu.Lock()
+	defer jw.mu.Unlock()
+	rec["uuid"] = uuid
+	rec["parentUuid"] = jw.lastUUID
+	rec["type"] = "run_manifest"
+	rec["sessionId"] = jw.sessionID
+	rec["timestamp"] = time.Now().UTC().Format(time.RFC3339)
+	jw.writeRecordLocked(rec)
+	if jw.writer != nil {
+		jw.writer.Flush()
+	}
+	jw.lastUUID = uuid
+	return uuid
+}
+
+// WriteSessionEnd writes the final session_end summary record. It flushes but
+// does not close the file; Finalize writes the run_manifest after it and then
+// closes via flushAndClose.
 func (jw *jsonlWriter) WriteSessionEnd(duration time.Duration, filesReviewed []string, llmFailures int64) {
 	uuid := generateUUID()
 
@@ -334,9 +383,9 @@ func (jw *jsonlWriter) WriteSessionEnd(duration time.Duration, filesReviewed []s
 	if jw.writer != nil {
 		jw.writer.Flush()
 	}
-	if jw.file != nil {
-		jw.file.Close()
-	}
+	// NOTE: the file is intentionally not closed here. Finalize writes the
+	// run_manifest as the final record after session_end, then closes via
+	// flushAndClose. Closing here would truncate the manifest.
 }
 
 func (jw *jsonlWriter) flushAndClose() {

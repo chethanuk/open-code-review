@@ -2,8 +2,11 @@ package scan
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,6 +70,9 @@ type Args struct {
 	// batches are dispatched. 0 = unlimited. Set via --max-tokens-budget
 	// or ScanTemplate.MaxTokensBudget.
 	MaxTokensBudget int64
+	// RunMeta carries cmd-layer-populated run-identity metadata folded into
+	// the run manifest at Finalize. Ignored when Session is supplied.
+	RunMeta session.RunMeta
 }
 
 // planEnabled / dedupEnabled / summaryEnabled report whether each optional
@@ -114,6 +120,7 @@ func NewAgent(args Args) *Agent {
 	if args.Session == nil {
 		args.Session = session.New(args.RepoDir, "", args.Model, session.SessionOptions{
 			ReviewMode: session.ReviewModeFullScan,
+			RunMeta:    args.RunMeta,
 		})
 	}
 	a := &Agent{
@@ -153,6 +160,15 @@ func toLoopTemplate(s template.ScanTemplate) template.Template {
 
 // Session returns the session history associated with this Agent.
 func (a *Agent) Session() *session.SessionHistory { return a.session }
+
+// Manifest returns the run manifest produced at Finalize, or nil before the
+// run completes. Surfaced verbatim in --format json.
+func (a *Agent) Manifest() *session.RunManifest {
+	if a == nil || a.session == nil {
+		return nil
+	}
+	return a.session.Manifest()
+}
 
 // SessionID returns the current scan's session id, or "" when no session has been created.
 func (a *Agent) SessionID() string {
@@ -258,6 +274,9 @@ func (a *Agent) Run(ctx context.Context) ([]model.LlmComment, error) {
 	// Project-level summary runs after all batches; never blocks return.
 	a.maybeRunProjectSummary(ctx, comments)
 
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		a.session.MarkCancelled()
+	}
 	a.session.Finalize()
 	return comments, err
 }
@@ -327,8 +346,14 @@ func (a *Agent) filterLargeScans(items []model.ScanItem) []model.ScanItem {
 	for _, it := range items {
 		tokens := llm.CountTokens(it.Content)
 		if tokens > limit {
-			fmt.Fprintf(stdout.Writer(), "[ocr] Skipping %s (~%d tokens exceeds 80%% of max_tokens(%d))\n",
-				it.Path, tokens, a.args.Template.MaxTokens)
+			msg := fmt.Sprintf("content tokens (~%d) exceed 80%% of max_tokens(%d)", tokens, a.args.Template.MaxTokens)
+			fmt.Fprintf(stdout.Writer(), "[ocr] Skipping %s (%s)\n", it.Path, msg)
+			// Record the drop so the manifest's coverage denominator still
+			// counts this file (as failed/skipped_limit) instead of silently
+			// deselecting it — mirrors the prompt-level threshold path.
+			a.recordWarning("token_threshold_exceeded", it.Path, msg)
+			a.session.RecordReviewItemFailed(it.Path, it.Path, it.Path,
+				scanFingerprint(it), session.FailureSkippedLimit, msg)
 			skipped++
 			continue
 		}
@@ -392,6 +417,10 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 		return []model.LlmComment{}, nil
 	}
 
+	// Manifest coverage: the reviewable item set is the denominator, plus an
+	// artifact checksum over the sorted per-file fingerprints.
+	a.recordSelectionAndArtifact()
+
 	atomic.StoreInt64(&a.subtaskFailed, 0)
 
 	strategy := a.resolveBatchStrategy()
@@ -436,6 +465,29 @@ func (a *Agent) dispatchSubtasks(ctx context.Context) ([]model.LlmComment, error
 		return nil, fmt.Errorf("all %d file scan(s) failed — check your LLM configuration and API key", dispatched)
 	}
 	return a.args.CommentCollector.Comments(), nil
+}
+
+// scanFingerprint derives a stable per-item fingerprint for the manifest.
+// Content is hashed alongside the path (the item already carries the full
+// file in memory), so the artifact checksum changes whenever the scanned
+// inputs do — same guarantee the diff path gets from hashing d.Diff.
+func scanFingerprint(it model.ScanItem) string {
+	sum := sha256.Sum256([]byte(session.ReviewModeFullScan + "\x00" + it.Path + "\x00" + it.Content))
+	return fmt.Sprintf("%x", sum)
+}
+
+// recordSelectionAndArtifact records the reviewable item set (coverage
+// denominator) and an order-independent artifact checksum over the sorted
+// per-file fingerprints.
+func (a *Agent) recordSelectionAndArtifact() {
+	selected := make([]string, 0, len(a.items))
+	fps := make([]string, 0, len(a.items))
+	for i := range a.items {
+		selected = append(selected, a.items[i].Path)
+		fps = append(fps, scanFingerprint(a.items[i]))
+	}
+	a.session.SetSelected(selected)
+	a.session.SetArtifactChecksum(session.ArtifactChecksum(fps))
 }
 
 // resolveBatchStrategy reads the strategy from the scan template, defaulting
@@ -497,6 +549,21 @@ func (a *Agent) dispatchBatch(ctx context.Context, batchIdx int, batch []model.S
 		go func(it model.ScanItem) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// A panic while scanning one file must be isolated exactly like an
+			// error return: counted in subtaskFailed and recorded as a failed
+			// item with class "panic", so other files still complete and the
+			// manifest is still finalized. Mirrors the diff-review dispatch.
+			defer func() {
+				if r := recover(); r != nil {
+					atomic.AddInt64(&a.subtaskFailed, 1)
+					a.session.RecordReviewItemFailed(it.Path, it.Path, it.Path, scanFingerprint(it), session.FailurePanic, fmt.Sprintf("panic: %v", r))
+					fmt.Fprintf(stdout.Writer(), "[ocr] Scan subtask panic for %s (batch #%d): %v\n%s\n", it.Path, batchIdx, r, debug.Stack())
+					telemetry.ErrorEvent(ctx, "scan.subtask.panic", fmt.Errorf("panic: %v", r),
+						telemetry.AnyToAttr("file.path", it.Path),
+						telemetry.AnyToAttr("batch.index", batchIdx))
+					a.recordWarning("scan_subtask_error", it.Path, fmt.Sprintf("panic: %v", r))
+				}
+			}()
 
 			var fileCtx context.Context
 			var cancel context.CancelFunc
@@ -550,6 +617,8 @@ func (a *Agent) executeSubtask(ctx context.Context, it model.ScanItem) error {
 
 	messages := a.renderMessages(it, rule, planGuidance)
 
+	fingerprint := scanFingerprint(it)
+
 	tokenCount := llmloop.CountMessagesTokens(messages)
 	maxAllowed := a.args.Template.MaxTokens
 	tokenLimit := llmloop.PromptTokenLimit(maxAllowed)
@@ -557,6 +626,7 @@ func (a *Agent) executeSubtask(ctx context.Context, it model.ScanItem) error {
 		msg := fmt.Sprintf("prompt tokens (%d) exceed %d%% of max_tokens(%d)", tokenCount, 80, maxAllowed)
 		fmt.Fprintf(stdout.Writer(), "[ocr] WARNING: %s for %s\n", msg, it.Path)
 		a.recordWarning("token_threshold_exceeded", it.Path, msg)
+		a.session.RecordReviewItemFailed(it.Path, it.Path, it.Path, fingerprint, session.FailureSkippedLimit, msg)
 		telemetry.Event(ctx, "token.threshold.exceeded",
 			telemetry.AnyToAttr("file.path", it.Path),
 			telemetry.AnyToAttr("tokens", tokenCount),
@@ -565,7 +635,20 @@ func (a *Agent) executeSubtask(ctx context.Context, it model.ScanItem) error {
 	}
 
 	_, err := a.runner.RunPerFile(ctx, messages, it.Path)
-	return err
+	if err != nil {
+		a.session.RecordReviewItemFailed(it.Path, it.Path, it.Path, fingerprint, session.ClassifyFailure(err), err.Error())
+		return err
+	}
+	// The async CommentWorkerPool may still be resolving code_comment calls
+	// for this file when RunPerFile returns; drain it before reading the
+	// collector so the persisted checkpoint carries the full comment set
+	// (mirrors the diff-review path's per-file Await).
+	if a.args.CommentWorkerPool != nil {
+		a.args.CommentWorkerPool.Await()
+	}
+	comments := a.args.CommentCollector.CommentsForPath(it.Path)
+	a.session.RecordReviewItemDone(it.Path, it.Path, it.Path, fingerprint, comments)
+	return nil
 }
 
 // maybeRunPlan invokes PLAN_TASK on the file and returns a human-readable

@@ -77,7 +77,7 @@ func TestLoadDetail_ReturnsItems(t *testing.T) {
 	})
 	sh.RecordReviewItemDone("a.go", "a.go", "a.go", "fp-a", []model.LlmComment{{Path: "a.go", Content: "note"}})
 	sh.RecordReviewItemReused("b.go", "b.go", "b.go", "fp-b", "prior-session", []model.LlmComment{{Path: "b.go", Content: "cached"}})
-	sh.RecordReviewItemFailed("c.go", "c.go", "c.go", "fp-c", "boom")
+	sh.RecordReviewItemFailed("c.go", "c.go", "c.go", "fp-c", FailureProviderError, "boom")
 	sh.Finalize()
 
 	summary, items, err := LoadDetail(repoDir, sh.SessionID)
@@ -166,7 +166,7 @@ func writeTestSession(t *testing.T, repoDir, from, to string, comments []model.L
 	}
 	for i := 0; i < failedCount; i++ {
 		filePath := "failed-" + filepath.Base(t.TempDir()) + ".go"
-		sh.RecordReviewItemFailed(filePath, filePath, filePath, "fp-fail-"+filePath, "test error")
+		sh.RecordReviewItemFailed(filePath, filePath, filePath, "fp-fail-"+filePath, FailureProviderError, "test error")
 	}
 	if finalize {
 		sh.Finalize()

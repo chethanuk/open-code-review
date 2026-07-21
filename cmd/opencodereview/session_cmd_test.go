@@ -90,7 +90,7 @@ func TestRunSessionShow_Text(t *testing.T) {
 		DiffCommit: "abc123",
 	})
 	sh.RecordReviewItemDone("a.go", "a.go", "a.go", "fp-a", []model.LlmComment{{Path: "a.go", Content: "note"}})
-	sh.RecordReviewItemFailed("bad.go", "bad.go", "bad.go", "fp-bad", "boom")
+	sh.RecordReviewItemFailed("bad.go", "bad.go", "bad.go", "fp-bad", session.FailureProviderError, "boom")
 	sh.Finalize()
 
 	got := captureStdout(t, func() {

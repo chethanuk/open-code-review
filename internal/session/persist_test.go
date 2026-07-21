@@ -285,7 +285,7 @@ func TestReviewItemResumeRoundTrip(t *testing.T) {
 		ExistingCode: "old()",
 	}}
 	sh.RecordReviewItemDone("a.go", "a.go", "a.go", "fp-a", comments)
-	sh.RecordReviewItemFailed("b.go", "b.go", "b.go", "fp-b", "rate limit")
+	sh.RecordReviewItemFailed("b.go", "b.go", "b.go", "fp-b", FailureProviderError, "rate limit")
 	sh.Finalize()
 
 	state, err := LoadResumeState(repoDir, sh.SessionID)

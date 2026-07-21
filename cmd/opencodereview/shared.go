@@ -16,6 +16,7 @@ import (
 	"github.com/open-code-review/open-code-review/internal/gitcmd"
 	"github.com/open-code-review/open-code-review/internal/llm"
 	"github.com/open-code-review/open-code-review/internal/model"
+	"github.com/open-code-review/open-code-review/internal/session"
 	"github.com/open-code-review/open-code-review/internal/stdout"
 	"github.com/open-code-review/open-code-review/internal/telemetry"
 	"github.com/open-code-review/open-code-review/internal/tool"
@@ -134,6 +135,9 @@ type llmRuntime struct {
 	MainToolDefs []llm.ToolDef
 	Collector    *tool.CommentCollector
 	AppCfg       *Config
+	// Endpoint is the resolved LLM endpoint. Retained so the command layer
+	// can derive non-secret run-manifest metadata (provider, config hash).
+	Endpoint llm.ResolvedEndpoint
 }
 
 // loadLLMRuntime loads tool defs from toolConfigPath, reads the app config
@@ -177,6 +181,7 @@ func loadLLMRuntime(tpl *template.Template, toolConfigPath, modelOverride string
 		MainToolDefs: mainToolDefs,
 		Collector:    tool.NewCommentCollector(),
 		AppCfg:       appCfg,
+		Endpoint:     ep,
 	}, nil
 }
 
@@ -255,6 +260,11 @@ type ResultProvider interface {
 	// in JSON output or failure diagnostics. Returns "" when no session was
 	// created.
 	SessionID() string
+	// Manifest returns the immutable run manifest (coverage + terminal state)
+	// produced at Finalize. Nil when no session/run completed. It is the same
+	// value persisted as the last JSONL record, so JSON output and the stored
+	// session expose identical coverage.
+	Manifest() *session.RunManifest
 }
 
 type resumeInfoProvider interface {
@@ -287,7 +297,7 @@ func emitRunResult(
 	traceID := telemetry.TraceIDFromContext(ctx)
 
 	if outputFormat == "json" && len(comments) == 0 && ag.FilesReviewed() == 0 {
-		return outputJSONNoFiles(traceID)
+		return outputJSONNoFiles(traceID, ag.Manifest())
 	}
 
 	// Agent-text audiences need stdout back before PrintTraceSummary so the
@@ -310,7 +320,7 @@ func emitRunResult(
 		return outputJSONWithWarnings(comments, ag.Warnings(), ag.FilesReviewed(),
 			ag.TotalInputTokens(), ag.TotalOutputTokens(), ag.TotalTokensUsed(),
 			ag.TotalCacheReadTokens(), ag.TotalCacheWriteTokens(), duration,
-			ag.ProjectSummary(), ag.ToolCalls(), traceID, resumeInfo, ag.SessionID())
+			ag.ProjectSummary(), ag.ToolCalls(), traceID, resumeInfo, ag.SessionID(), ag.Manifest())
 	}
 	outputTextWithWarnings(comments, ag.Warnings())
 	if summary := ag.ProjectSummary(); summary != "" {
