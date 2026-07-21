@@ -497,6 +497,7 @@ JSON出力ではこの2つのフィールドは`content`や`start_line`などと
 - [`github_actions/`](./examples/github_actions/) — GitHub Actions統合の例
 - [`gitlab_ci/`](./examples/gitlab_ci/) — GitLab CI統合の例
 - [`gitflic_ci/`](./examples/gitflic_ci/) — GitFlic CI統合の例
+- [`gerrit_ci/`](./examples/gerrit_ci/) — Gerrit (Jenkins / Gerrit Trigger) 統合の例
 
 #### GitHub Action
 

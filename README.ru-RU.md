@@ -499,6 +499,7 @@ ocr review \
 - [`github_actions/`](./examples/github_actions/) — пример интеграции с GitHub Actions
 - [`gitlab_ci/`](./examples/gitlab_ci/) — пример интеграции с GitLab CI
 - [`gitflic_ci/`](./examples/gitflic_ci/) — пример интеграции с GitFlic CI
+- [`gerrit_ci/`](./examples/gerrit_ci/) — пример интеграции с Gerrit (Jenkins / Gerrit Trigger)
 
 #### GitHub Action
 
