@@ -437,7 +437,7 @@ func (r *Runner) executeToolCall(ctx context.Context, newPath string, call llm.T
 func (r *Runner) addNextMessage(ctx context.Context, assistantContent string, toolCalls []llm.ToolCall, results []tool.ToolCallResult, messages *[]llm.Message, filePath string, st *compressionState) bool {
 	maxAllowed := r.deps.Template.MaxTokens
 	softLimit := int(float64(maxAllowed) * tokenSoftThreshold)
-	warnLimit := int(float64(maxAllowed) * tokenWarningThreshold)
+	warnLimit := PromptTokenLimit(maxAllowed)
 
 	r.tryApplyPendingCompression(st, messages)
 

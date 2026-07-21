@@ -19,6 +19,14 @@ const (
 	tokenWarningThreshold = 0.80 // immediate sync compression
 )
 
+// PromptTokenLimit returns tokenWarningThreshold (80%) of maxTokens. It is
+// shared by the agent and scan pre-flight gates, their large-input filters, and
+// computeActiveZoneSize so the threshold has a single definition. Non-positive
+// input is not special-cased — each caller decides what that means.
+func PromptTokenLimit(maxTokens int) int {
+	return int(float64(maxTokens) * tokenWarningThreshold)
+}
+
 // round groups consecutive messages starting with an assistant message
 // followed by zero or more tool result messages.
 type round struct {
@@ -88,7 +96,7 @@ func groupIntoRounds(messages []llm.Message, start int) []round {
 // remaining token budget after accounting for the frozen zone and the
 // compressed summary.
 func computeActiveZoneSize(rounds []round, messages []llm.Message, maxTokens int, reservedTokens int) int {
-	budget := int(float64(maxTokens)*tokenWarningThreshold) - reservedTokens
+	budget := PromptTokenLimit(maxTokens) - reservedTokens
 	if budget <= 0 {
 		return 0
 	}

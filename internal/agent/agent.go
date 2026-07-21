@@ -591,7 +591,7 @@ func (a *Agent) executeSubtask(ctx context.Context, d model.Diff) (bool, string,
 
 	tokenCount := llmloop.CountMessagesTokens(messages)
 	maxAllowed := a.args.Template.MaxTokens
-	tokenLimit := maxAllowed * 4 / 5 // 80% of MaxTokens
+	tokenLimit := llmloop.PromptTokenLimit(maxAllowed)
 	if tokenCount > tokenLimit {
 		msg := fmt.Sprintf("prompt tokens (%d) exceed %d%% of max_tokens(%d)", tokenCount, 80, maxAllowed)
 		fmt.Fprintf(stdout.Writer(), "[ocr] WARNING: %s for %s\n", msg, newPath)
@@ -787,7 +787,7 @@ func (a *Agent) resolveSystemRule(path string) string {
 
 // filterLargeDiffs drops diffs whose diff content alone consumes more than 80% of MaxTokens.
 func (a *Agent) filterLargeDiffs(diffs []model.Diff) []model.Diff {
-	limit := a.args.Template.MaxTokens * 4 / 5
+	limit := llmloop.PromptTokenLimit(a.args.Template.MaxTokens)
 	if limit <= 0 {
 		return diffs
 	}
