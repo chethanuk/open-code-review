@@ -1,0 +1,23 @@
+name: ZZ Injection Demo
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  vulnerable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Interpolated directly into the shell (the pattern the docs teach)
+        run: |
+          echo "background=${{ github.event.pull_request.title }}"
+  safe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Passed via env (the pattern action.yml already uses)
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "background=$PR_TITLE"
