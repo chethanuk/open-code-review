@@ -226,6 +226,15 @@ jobs:
           ' package.json > package.json.tmp && mv package.json.tmp package.json
 
       - name: Publish to npm
-        run: npm publish --access public
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          pkg_name=$(jq -r '.name' package.json)
+          already=$(npm view "${pkg_name}@${VERSION}" version 2>/dev/null || true)
+          if [ "$already" = "$VERSION" ]; then
+            echo "Skip: ${pkg_name}@${VERSION} already published"
+          else
+            npm publish --access public
+            echo "Published: ${pkg_name}@${VERSION}"
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
