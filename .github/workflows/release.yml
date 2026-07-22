@@ -10,6 +10,7 @@ permissions:
 jobs:
   build:
     runs-on: self-hosted
+    timeout-minutes: 15
     container:
       image: golang:1.26.5
     strategy:
@@ -58,6 +59,7 @@ jobs:
   release:
     needs: build
     runs-on: self-hosted
+    timeout-minutes: 20
     permissions:
       contents: write
       id-token: write
@@ -159,6 +161,7 @@ jobs:
   npm-publish:
     needs: release
     runs-on: self-hosted
+    timeout-minutes: 15
     container:
       image: node:24
     permissions:
