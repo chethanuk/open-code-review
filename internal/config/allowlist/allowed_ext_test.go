@@ -28,6 +28,8 @@ func TestIsAllowedExt(t *testing.T) {
 		{".FTLH", true},
 		{".ftlx", true},
 		{".FTLX", true},
+		{".proto", true},
+		{".PROTO", true},
 		{".txt", false},
 		{".md", false},
 		{".png", false},

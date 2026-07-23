@@ -90,6 +90,8 @@ func TestResolve_DefaultRules(t *testing.T) {
 		{"i18n/app.po", "Plural Forms"},
 		{"locale/messages.pot", "Placeholder Consistency"},
 		{"i18n/app.pot", "Header Integrity"},
+		{"api/v1/user.proto", "Wire Compatibility"},
+		{"service.proto", "Wire Compatibility"},
 	}
 
 	for _, tt := range tests {

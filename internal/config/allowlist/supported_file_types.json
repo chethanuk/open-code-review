@@ -69,5 +69,6 @@
   ".ets",
   ".json5",
   ".dart",
-  ".tf"
+  ".tf",
+  ".proto"
 ]
