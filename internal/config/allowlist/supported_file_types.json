@@ -69,5 +69,7 @@
   ".ets",
   ".json5",
   ".dart",
-  ".tf"
+  ".tf",
+  ".graphql",
+  ".gql"
 ]

@@ -22,6 +22,7 @@
     "**/*.c": "c.md",
     "**/*.py": "python.md",
     "**/*.po": "po.md",
-    "**/*.pot": "pot.md"
+    "**/*.pot": "pot.md",
+    "**/*.{graphql,gql}": "graphql.md"
   }
 }
