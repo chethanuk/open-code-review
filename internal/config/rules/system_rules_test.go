@@ -90,6 +90,8 @@ func TestResolve_DefaultRules(t *testing.T) {
 		{"i18n/app.po", "Plural Forms"},
 		{"locale/messages.pot", "Placeholder Consistency"},
 		{"i18n/app.pot", "Header Integrity"},
+		{"api/schema.graphql", "Breaking Changes"},
+		{"queries/user.gql", "Breaking Changes"},
 	}
 
 	for _, tt := range tests {
