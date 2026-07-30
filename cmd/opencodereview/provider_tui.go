@@ -905,11 +905,36 @@ func officialProviderEnvKeySet(p llm.Provider) bool {
 	return p.EnvVar != "" && os.Getenv(p.EnvVar) != ""
 }
 
+// officialAPIKeyRequiredError mirrors the wording applyOfficialProviderConfig
+// uses for the same failure, so the interactive and non-interactive paths name
+// the same options in the same order (static key -> api_key_cmd -> env var).
 func officialAPIKeyRequiredError(p llm.Provider) string {
-	if p.EnvVar != "" {
-		return fmt.Sprintf("API key is required (or set $%s)", p.EnvVar)
+	if p.Name == "" {
+		return "API key is required"
 	}
-	return "API key is required"
+	if p.EnvVar != "" {
+		return fmt.Sprintf("API key is required (configure it, set providers.%s.api_key_cmd, or set $%s)", p.Name, p.EnvVar)
+	}
+	return fmt.Sprintf("API key is required (configure it or set providers.%s.api_key_cmd)", p.Name)
+}
+
+// apiKeyCmdForStep returns the api_key_cmd already configured for the provider
+// the API-key step is editing, reading the same config entry loadExistingAPIKey
+// reads the static key from. The step serves the Official and Custom tabs; the
+// Manual tab has its own form and uses llm.auth_token_cmd instead.
+func (m providerTUIModel) apiKeyCmdForStep() string {
+	switch m.activeTab {
+	case tabOfficial:
+		if m.existingCfg == nil {
+			return ""
+		}
+		return m.existingCfg.Providers[m.currentProvider().Name].APIKeyCmd
+	case tabCustom:
+		if cp, ok := m.selectedCustomProvider(); ok {
+			return m.customProviderEntry(cp.name, cp.entry).APIKeyCmd
+		}
+	}
+	return ""
 }
 
 func (m providerTUIModel) apiKeyStepCanConfirm() (ok bool, errMsg string) {
@@ -919,12 +944,21 @@ func (m providerTUIModel) apiKeyStepCanConfirm() (ok bool, errMsg string) {
 	if !m.apiKeyMasked && strings.TrimSpace(m.apiKeyInput.Value()) != "" {
 		return true, ""
 	}
+	// Resolver precedence is static key -> api_key_cmd -> env var, so an already
+	// configured command satisfies the requirement: the field renders blank for
+	// such a provider and must still be confirmable.
+	if m.apiKeyCmdForStep() != "" {
+		return true, ""
+	}
 	if m.activeTab == tabOfficial {
 		p := m.currentProvider()
 		if officialProviderEnvKeySet(p) {
 			return true, ""
 		}
 		return false, officialAPIKeyRequiredError(p)
+	}
+	if cp, ok := m.selectedCustomProvider(); ok && cp.name != "" {
+		return false, fmt.Sprintf("API key is required (configure it or set custom_providers.%s.api_key_cmd)", cp.name)
 	}
 	return false, "API key is required"
 }
@@ -1044,7 +1078,16 @@ func authHeaderFormError(raw string) string {
 	)
 }
 
-const manualAuthTokenRequiredError = "Auth token is required (whitespace-only input is not accepted)"
+const manualAuthTokenRequiredError = "Auth token is required (configure it or set llm.auth_token_cmd; whitespace-only input is not accepted)"
+
+// manualAuthTokenCmd returns the configured llm.auth_token_cmd, which the
+// resolver runs when llm.auth_token is empty.
+func (m providerTUIModel) manualAuthTokenCmd() string {
+	if m.existingCfg == nil {
+		return ""
+	}
+	return m.existingCfg.Llm.AuthTokenCmd
+}
 
 func (m providerTUIModel) handleCustomFormEnter() (tea.Model, tea.Cmd) {
 	switch m.cpStep {
@@ -1605,7 +1648,9 @@ func (m providerTUIModel) handleManualFormEnter() (tea.Model, tea.Cmd) {
 		m.manualStep = manualStepAuthToken
 		return m, m.manualTokenInput.Focus()
 	case manualStepAuthToken:
-		if strings.TrimSpace(m.manualTokenInput.Value()) == "" && m.manualTokenOriginal == "" {
+		// Same precedence as the provider tabs: an already configured
+		// llm.auth_token_cmd stands in for a typed or saved token.
+		if strings.TrimSpace(m.manualTokenInput.Value()) == "" && m.manualTokenOriginal == "" && m.manualAuthTokenCmd() == "" {
 			m.formError = manualAuthTokenRequiredError
 			return m, nil
 		}
@@ -1907,7 +1952,10 @@ func (m providerTUIModel) result() providerTUIResult {
 		return providerTUIResult{}
 
 	case tabManual:
-		apiKey := m.manualTokenInput.Value()
+		// Trim like the Official and Custom tabs: a whitespace-only token must
+		// never persist, or it wins precedence over a working auth_token_cmd
+		// and sends "Authorization: Bearer  ".
+		apiKey := strings.TrimSpace(m.manualTokenInput.Value())
 		if m.manualTokenMasked || (apiKey == "" && m.manualTokenOriginal != "") {
 			apiKey = m.manualTokenOriginal
 		}
@@ -2212,6 +2260,9 @@ func (m providerTUIModel) viewManualTab(s *strings.Builder) {
 				if m.manualTokenMasked && m.manualTokenOriginal != "" {
 					s.WriteString(tuiDimStyle.Render("    "+savedSecretReplaceHint(m.manualTokenOriginal)) + "\n")
 				}
+				if cmd := m.manualAuthTokenCmd(); cmd != "" {
+					s.WriteString(tuiDimStyle.Render(keyCmdConfiguredHintLine("    ", "llm.auth_token_cmd", cmd)) + "\n")
+				}
 			case manualStepAuthHeader:
 				s.WriteString("    " + m.manualAuthHeaderInput.View() + "\n")
 			}
@@ -2314,6 +2365,14 @@ func (m providerTUIModel) viewAPIKey(s *strings.Builder) {
 		s.WriteString("\n")
 	}
 
+	// Mirrors the env-var hint below: the step is already satisfied, so say so
+	// rather than leaving an empty field that looks unconfigured.
+	if cmd := m.apiKeyCmdForStep(); cmd != "" {
+		s.WriteString("\n")
+		s.WriteString(tuiDimStyle.Render(keyCmdConfiguredHintLine("  ", "api_key_cmd", cmd)))
+		s.WriteString("\n")
+	}
+
 	if m.activeTab == tabOfficial {
 		provider := m.currentProvider()
 		if envKey := os.Getenv(provider.EnvVar); envKey != "" {
@@ -2390,6 +2449,20 @@ func officialAPIKeyEnvSetHint(envVar string, hasSavedKey bool) string {
 
 func officialAPIKeyEnvSetHintLine(envVar string, hasSavedKey bool) string {
 	return "  " + officialAPIKeyEnvSetHint(envVar, hasSavedKey)
+}
+
+// keyCmdConfiguredHint explains why this step accepts an empty field. A
+// provider configured only by command renders a blank input -- the command line
+// is not the secret, but it is also not the value being edited here -- so
+// without this the user has no way to tell a credential is already wired up,
+// and no way to know that leaving the field empty is the correct action.
+// keyLabel names the config key so the hint points at what to edit instead.
+func keyCmdConfiguredHint(keyLabel, cmd string) string {
+	return fmt.Sprintf("%s is set (%s); leave empty to keep using it.", keyLabel, cmd)
+}
+
+func keyCmdConfiguredHintLine(indent, keyLabel, cmd string) string {
+	return indent + keyCmdConfiguredHint(keyLabel, cmd)
 }
 
 // --- Styles ---

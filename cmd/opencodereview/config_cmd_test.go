@@ -89,6 +89,56 @@ func TestSetConfigValueProviderEntry(t *testing.T) {
 	}
 }
 
+func TestSetConfigValueKeyCmdFields(t *testing.T) {
+	// A typo in any of these case labels would silently degrade to "unknown
+	// provider field" / "unknown config key", so assert the field each key writes.
+	const value = "op read op://dev/anthropic/api-key"
+	tests := []struct {
+		name string
+		key  string
+		got  func(cfg *Config) string
+	}{
+		{"preset provider api_key_cmd", "providers.anthropic.api_key_cmd", func(cfg *Config) string { return cfg.Providers["anthropic"].APIKeyCmd }},
+		{"custom provider api_key_cmd", "custom_providers.my-gateway.api_key_cmd", func(cfg *Config) string { return cfg.CustomProviders["my-gateway"].APIKeyCmd }},
+		{"llm auth_token_cmd", "llm.auth_token_cmd", func(cfg *Config) string { return cfg.Llm.AuthTokenCmd }},
+		{"llm AuthTokenCmd alias", "llm.AuthTokenCmd", func(cfg *Config) string { return cfg.Llm.AuthTokenCmd }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{}
+			if err := setConfigValue(cfg, tt.key, value); err != nil {
+				t.Fatalf("setConfigValue %s: %v", tt.key, err)
+			}
+			if got := tt.got(cfg); got != value {
+				t.Errorf("%s = %q, want %q", tt.key, got, value)
+			}
+		})
+	}
+}
+
+func TestShouldMaskConfigValue(t *testing.T) {
+	// api_key/auth_token values are secrets; the *_cmd variants are command
+	// lines, so they print unmasked.
+	tests := []struct {
+		key  string
+		want bool
+	}{
+		{"llm.auth_token", true},
+		{"llm.auth_token_cmd", false},
+		{"providers.x.api_key", true},
+		{"providers.x.api_key_cmd", false},
+		{"providers.x.APIKeyCmd", false},
+		{"llm.AuthToken", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			if got := shouldMaskConfigValue(tt.key); got != tt.want {
+				t.Errorf("shouldMaskConfigValue(%q) = %v, want %v", tt.key, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSetConfigValueProviderEntryNonPresetWritesCustomProvider(t *testing.T) {
 	cfg := &Config{}
 
