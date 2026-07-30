@@ -54,6 +54,19 @@ func TestResolveKeyCmd(t *testing.T) {
 		{name: "blank line only", cmd: "echo.", wantErr: "produced empty output"},
 		// & is cmd.exe's command separator, so both echoes run and produce two lines.
 		{name: "multi-line output", cmd: "echo a& echo b", wantErr: "produced multi-line output"},
+		// The two rows below pin down what the outer quote pair we add does and does
+		// not protect, because "the command line could split" reads like a hole until
+		// you know which shapes actually split. /S makes cmd.exe strip the first
+		// character and the last quote and run the remainder unchanged, so a bare
+		// interior quote leaves the following & inside a quoted region: it stays one
+		// command and echo prints the & literally.
+		{name: "interior quote keeps & quoted", cmd: `echo A" & echo B`, want: `A" & echo B`},
+		// A doubled quote closes that region, so this & is a real separator and both
+		// echoes run. It is not a privilege boundary -- api_key_cmd is already a
+		// command line its author asked us to run -- but it is the one shape where the
+		// line splits, and the single-line guard is what stops the extra output from
+		// being mistaken for the credential.
+		{name: "doubled quote lets & split the line", cmd: `echo A"" & echo B`, wantErr: "produced multi-line output"},
 		{name: "command not found", cmd: "this-cmd-does-not-exist-xyz", wantErr: "failed:"},
 	}
 	for _, tt := range tests {
