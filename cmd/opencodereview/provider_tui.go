@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 	"strings"
@@ -1179,7 +1180,7 @@ func (m providerTUIModel) applyCreateCustomProvider() (tea.Model, tea.Cmd) {
 // map cloning) can safely mutate the returned value without aliasing the
 // original's slice or map fields.
 func cloneProviderEntry(v ProviderEntry) ProviderEntry {
-	out := ProviderEntry{
+	return ProviderEntry{
 		APIKey:     v.APIKey,
 		APIKeyCmd:  v.APIKeyCmd,
 		URL:        v.URL,
@@ -1187,15 +1188,12 @@ func cloneProviderEntry(v ProviderEntry) ProviderEntry {
 		Model:      v.Model,
 		Models:     append([]string(nil), v.Models...),
 		AuthHeader: v.AuthHeader,
+		TimeoutSec: v.TimeoutSec,
+		// Shallow copy only: nested maps/slices inside a value are not cloned.
+		// maps.Clone keeps a nil map nil, matching the field's omitempty.
+		ExtraBody:    maps.Clone(v.ExtraBody),
+		ExtraHeaders: maps.Clone(v.ExtraHeaders),
 	}
-	if v.ExtraBody != nil {
-		out.ExtraBody = make(map[string]any, len(v.ExtraBody))
-		for k, val := range v.ExtraBody {
-			// Shallow copy only: nested maps/slices inside val are not cloned.
-			out.ExtraBody[k] = val
-		}
-	}
-	return out
 }
 
 func cloneCustomProvidersMap(src map[string]ProviderEntry) map[string]ProviderEntry {
