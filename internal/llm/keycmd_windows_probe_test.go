@@ -28,7 +28,7 @@ func TestProbe_CmdExeQuoteSemantics(t *testing.T) {
 	for _, p := range probes {
 		t.Run(p.name, func(t *testing.T) {
 			got, err := resolveKeyCmd(p.cmd, "probe")
-			t.Logf("PROBE %-24s cmd=%q\n            -> out=%q\n            -> err=%v", p.name, p.cmd, got, err)
+			t.Errorf("PROBE %-24s cmd=%q\n            -> out=%q\n            -> err=%v", p.name, p.cmd, got, err)
 		})
 	}
 }
