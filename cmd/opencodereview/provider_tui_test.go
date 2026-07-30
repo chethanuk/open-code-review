@@ -2291,8 +2291,10 @@ func TestProviderTUI_OfficialApiKeyEmptyWithoutEnvBlocksEnter(t *testing.T) {
 	if m2.step != stepAPIKey {
 		t.Errorf("step = %d, want stepAPIKey", m2.step)
 	}
-	if m2.formError != "API key is required (or set $DASHSCOPE_API_KEY)" {
-		t.Errorf("formError = %q", m2.formError)
+	// The exact prose is pinned by TestApiKeyStepCanConfirm; this test covers the
+	// Enter-key wiring, so compare against the helper and never drift again.
+	if want := officialAPIKeyRequiredError(m2.currentProvider()); m2.formError != want {
+		t.Errorf("formError = %q, want %q", m2.formError, want)
 	}
 	if cmd != nil {
 		t.Error("Enter without key or env should not quit")
@@ -2354,8 +2356,10 @@ func TestProviderTUI_CustomExistingApiKeyEmptyBlocksEnter(t *testing.T) {
 	if m2.step != stepAPIKey {
 		t.Errorf("step = %d, want stepAPIKey", m2.step)
 	}
-	if m2.formError != "API key is required" {
-		t.Errorf("formError = %q, want %q", m2.formError, "API key is required")
+	// Prefix, not the full string: this test covers Enter-key gating, and the
+	// exact wording is pinned by TestApiKeyStepCanConfirm.
+	if !strings.HasPrefix(m2.formError, "API key is required") {
+		t.Errorf("formError = %q, want it to start with %q", m2.formError, "API key is required")
 	}
 	if cmd != nil {
 		t.Error("Enter with cleared key should not quit")
@@ -2600,6 +2604,7 @@ func TestProviderTUI_DeleteModelPreservesActiveModel(t *testing.T) {
 }
 
 func TestApplyCustomProviderConfigPreservesModelOrder(t *testing.T) {
+	isolateLLMConnectionTest(t)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	models := []string{"test-model", "test-model-2", "bbb", "aaa", "test-model-3"}
@@ -2643,6 +2648,7 @@ func TestApplyCustomProviderConfigPreservesModelOrder(t *testing.T) {
 }
 
 func TestApplyManualConfigNormalizesAuthHeader(t *testing.T) {
+	isolateLLMConnectionTest(t)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	cfg := &Config{}
@@ -2668,6 +2674,7 @@ func TestApplyManualConfigNormalizesAuthHeader(t *testing.T) {
 }
 
 func TestApplyCustomProviderConfigNormalizesAuthHeader(t *testing.T) {
+	isolateLLMConnectionTest(t)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	cfg := &Config{
@@ -2816,6 +2823,7 @@ func TestEnterEditCustomProvider_ProtocolIndex(t *testing.T) {
 // mirrored for the two protocols that have a boolean equivalent so older
 // binaries can still read the config.
 func TestApplyManualConfig_DoubleWritesProtocolAndUseAnthropic(t *testing.T) {
+	isolateLLMConnectionTest(t)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 

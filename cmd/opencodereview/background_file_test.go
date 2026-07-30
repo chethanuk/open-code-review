@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -37,7 +38,14 @@ func TestResolveBackgroundFilePath(t *testing.T) {
 	})
 
 	t.Run("absolute unchanged", func(t *testing.T) {
+		// FromSlash is not enough on its own: it only swaps separators, and
+		// `\etc\context.md` is rooted but not absolute on Windows, where
+		// filepath.IsAbs wants a volume. Without the drive letter this case
+		// exercised the relative branch instead of the one it names.
 		abs := filepath.FromSlash("/etc/context.md")
+		if runtime.GOOS == "windows" {
+			abs = `C:\etc\context.md`
+		}
 		if got := resolveBackgroundFilePath(repo, abs); got != abs {
 			t.Errorf("resolveBackgroundFilePath = %q, want %q (absolute must be untouched)", got, abs)
 		}

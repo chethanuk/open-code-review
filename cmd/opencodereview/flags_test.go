@@ -1,6 +1,8 @@
 package main
 
 import (
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -224,6 +226,58 @@ func TestPrintDefaults(t *testing.T) {
 	var s string
 	fs.StringVar(&s, "name", "default", "a name")
 	fs.PrintDefaults()
+}
+
+// configFieldList returns the comma-separated names that follow prefix on the
+// one line of text starting with it.
+func configFieldList(t *testing.T, text, prefix string) []string {
+	t.Helper()
+	for _, line := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		var out []string
+		for _, field := range strings.Split(strings.TrimPrefix(line, prefix), ",") {
+			if field = strings.TrimSpace(field); field != "" {
+				out = append(out, field)
+			}
+		}
+		return out
+	}
+	t.Fatalf("no line starting with %q in:\n%s", prefix, text)
+	return nil
+}
+
+// These four lists are duplicated verbatim in printConfigUsage (what `ocr config`
+// and `ocr config --help` print) and in setConfigValue's unknown-key error.
+// api_key_cmd and llm.auth_token_cmd were added to the second copy and missed in
+// the first, so the primary discovery surface silently disagreed with the code.
+// Compared in order, since both copies are meant to be identical text.
+func TestPrintConfigUsage_ListsMatchSetConfigValueError(t *testing.T) {
+	usage := captureStdout(t, printConfigUsage)
+
+	err := setConfigValue(&Config{}, "definitely.not.a.key", "")
+	if err == nil {
+		t.Fatal("setConfigValue should reject an unknown key")
+	}
+	canonical := err.Error()
+
+	prefixes := []string{
+		"Supported keys: ",
+		"Provider fields: ",
+		"Protocol values: ",
+		"MCP server fields: ",
+	}
+	for _, prefix := range prefixes {
+		t.Run(strings.TrimSuffix(prefix, ": "), func(t *testing.T) {
+			want := configFieldList(t, canonical, prefix)
+			got := configFieldList(t, usage, prefix)
+			if !slices.Equal(got, want) {
+				t.Errorf("%q drifted between flags.go and config_cmd.go\n  flags.go:      %v\n  config_cmd.go: %v",
+					prefix, got, want)
+			}
+		})
+	}
 }
 
 func TestExpandShortFlags(t *testing.T) {
