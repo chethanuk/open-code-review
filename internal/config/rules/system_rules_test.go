@@ -1237,7 +1237,10 @@ func TestResolveRuleEntries_SymlinkSafety(t *testing.T) {
 	// The extension check on the resolved path should reject .json.
 	symlinkPath := filepath.Join(dir, "evil.md")
 	if err := os.Symlink(sensitiveFile, symlinkPath); err != nil {
-		t.Fatal(err)
+		// Creating a symlink on Windows needs SeCreateSymbolicLinkPrivilege, which
+		// an unelevated CI account does not have. Same skip the other symlink tests
+		// in this repo already use.
+		t.Skipf("cannot create symlink: %v", err)
 	}
 
 	entries := []ProjectRuleEntry{

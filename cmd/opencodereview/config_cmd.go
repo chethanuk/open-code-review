@@ -85,8 +85,7 @@ func runConfigSet(key, value string) error {
 	}
 
 	displayValue := value
-	normalizedKey := strings.ToLower(strings.ReplaceAll(key, "_", ""))
-	if strings.HasSuffix(normalizedKey, "apikey") || strings.HasSuffix(normalizedKey, "authtoken") {
+	if shouldMaskConfigValue(key) {
 		displayValue = maskKey(value)
 	}
 	fmt.Printf("Set %s = %s\n", key, displayValue)
@@ -94,6 +93,15 @@ func runConfigSet(key, value string) error {
 		fmt.Fprint(os.Stderr, warning)
 	}
 	return nil
+}
+
+// shouldMaskConfigValue reports whether the echoed value of a config key holds a
+// secret and must be masked. Matching on the normalized suffix covers both
+// snake_case and Go field spellings of api_key/auth_token at any path depth,
+// while the *_cmd variants stay unmasked: a command line is not a secret.
+func shouldMaskConfigValue(key string) bool {
+	normalizedKey := strings.ToLower(strings.ReplaceAll(key, "_", ""))
+	return strings.HasSuffix(normalizedKey, "apikey") || strings.HasSuffix(normalizedKey, "authtoken")
 }
 
 func runConfigUnset(key string) error {
@@ -226,6 +234,7 @@ func deleteCustomProvider(cfg *Config, name string) (bool, error) {
 // ProviderEntry holds per-provider configuration in the providers map.
 type ProviderEntry struct {
 	APIKey       string            `json:"api_key,omitempty"`
+	APIKeyCmd    string            `json:"api_key_cmd,omitempty"` // shell command whose stdout is the api key; used when api_key is empty
 	URL          string            `json:"url,omitempty"`
 	Protocol     string            `json:"protocol,omitempty"`
 	Model        string            `json:"model,omitempty"`
@@ -264,6 +273,7 @@ type Config struct {
 type LlmConfig struct {
 	URL          string            `json:"url,omitempty"`
 	AuthToken    string            `json:"auth_token,omitempty"`
+	AuthTokenCmd string            `json:"auth_token_cmd,omitempty"` // shell command whose stdout is the auth token; used when auth_token is empty
 	AuthHeader   string            `json:"auth_header,omitempty"`
 	Model        string            `json:"model,omitempty"`
 	Protocol     string            `json:"protocol,omitempty"`      // canonical protocol name; takes priority over UseAnthropic
@@ -369,6 +379,8 @@ func setConfigValue(cfg *Config, key, value string) error {
 		cfg.Llm.URL = value
 	case "llm.auth_token", "llm.AuthToken":
 		cfg.Llm.AuthToken = value
+	case "llm.auth_token_cmd", "llm.AuthTokenCmd":
+		cfg.Llm.AuthTokenCmd = value
 	case "llm.auth_header", "llm.AuthHeader":
 		normalized, err := llm.NormalizeAuthHeader(value)
 		if err != nil {
@@ -443,7 +455,7 @@ func setConfigValue(cfg *Config, key, value string) error {
 		}
 		cfg.Llm.ExtraBody = m
 	default:
-		return fmt.Errorf("unknown config key: %s\nSupported keys: provider, model, providers.<name>.<field>, custom_providers.<name>.<field>, mcp_servers.<name>.<field>, llm.url, llm.auth_token, llm.auth_header, llm.model, llm.protocol, llm.use_anthropic, llm.extra_body, llm.extra_headers, language, telemetry.enabled, telemetry.exporter, telemetry.otlp_endpoint, telemetry.content_logging\nProvider fields: api_key, url, protocol, model, models, auth_header, extra_body, extra_headers\nProtocol values: anthropic, openai, openai-responses\nMCP server fields: type, command, args, env, url, headers, tools, setup", key)
+		return fmt.Errorf("unknown config key: %s\nSupported keys: provider, model, providers.<name>.<field>, custom_providers.<name>.<field>, mcp_servers.<name>.<field>, llm.url, llm.auth_token, llm.auth_token_cmd, llm.auth_header, llm.model, llm.protocol, llm.use_anthropic, llm.extra_body, llm.extra_headers, language, telemetry.enabled, telemetry.exporter, telemetry.otlp_endpoint, telemetry.content_logging\nProvider fields: api_key, api_key_cmd, url, protocol, model, models, auth_header, extra_body, extra_headers\nProtocol values: anthropic, openai, openai-responses\nMCP server fields: type, command, args, env, url, headers, tools, setup", key)
 	}
 	return nil
 }
@@ -452,6 +464,8 @@ func applyProviderField(entry *ProviderEntry, field, key, value string) error {
 	switch field {
 	case "api_key":
 		entry.APIKey = value
+	case "api_key_cmd":
+		entry.APIKeyCmd = value
 	case "url":
 		entry.URL = value
 	case "protocol":
@@ -487,7 +501,7 @@ func applyProviderField(entry *ProviderEntry, field, key, value string) error {
 		}
 		entry.ExtraHeaders = parsed
 	default:
-		return fmt.Errorf("unknown provider field %q: supported fields are api_key, url, protocol, model, models, auth_header, extra_body, extra_headers", field)
+		return fmt.Errorf("unknown provider field %q: supported fields are api_key, api_key_cmd, url, protocol, model, models, auth_header, extra_body, extra_headers", field)
 	}
 	return nil
 }
