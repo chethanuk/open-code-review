@@ -159,6 +159,54 @@ The action posts a summary issue comment plus inline review comments. Two inputs
 
 > `sticky_summary` and `incremental` must be quoted strings (`'true'`/`'false'`); the action compares them as strings, so an unquoted YAML boolean will not match.
 
+### Review only what changed since the last run (checkpoints)
+
+`incremental` filters the comments a run produces; it still reviews the whole `merge-base..head` diff every time. On a long-lived PR that means re-reading the same 40 commits on every push. `checkpoint_range` fixes the other half: a run that reviewed everything it selected records the head it covered in a hidden marker inside its sticky summary comment, and the next run reviews `<that head>..<new head>` instead.
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `checkpoint_range` | `'false'` | Review only the range since the last recorded checkpoint. Requires `sticky_summary: 'true'` (the checkpoint lives in that comment). |
+| `full_review` | `'false'` | Force one full review even with `checkpoint_range` enabled. The run still records a new checkpoint. |
+
+```yaml
+- uses: alibaba/open-code-review@main
+  with:
+    sticky_summary: 'true'
+    checkpoint_range: 'true'
+```
+
+**When in doubt, this reviews the full range.** A checkpoint is used only when every one of these holds; otherwise the run reviews `merge-base..head` exactly as it does today, and the reason is reported in the `range_summary` output and the step log:
+
+| Reason | The run reviewed the full range because |
+|--------|------------------------------------------|
+| `disabled` | `checkpoint_range` is not `'true'` |
+| `sticky_disabled` | `sticky_summary` is not `'true'`, so there is nowhere durable to keep a checkpoint |
+| `manual_full_review` | `full_review: 'true'` was requested |
+| `no_summary_comment` | the PR has no sticky summary yet (the first run) |
+| `author_unverified` | the summary comment was not posted by this workflow's token |
+| `corrupt_checkpoint` | the summary carries no readable checkpoint marker (absent, malformed, or two of them) |
+| `schema_invalid` | the marker is for another PR, another marker version, or records a run that did not complete |
+| `base_changed` | the base ref or the merge-base moved, so the diff basis is no longer the one the checkpoint was taken against |
+| `config_changed` | the model, language, `llm_extra_body`, rules, routing inputs, or the resolved OCR version changed |
+| `not_ancestor` | the checkpoint is not an ancestor of the new head (force-push, rebase) |
+| `unknown_object` | the checkpoint commit is not in this clone, so ancestry could not be checked |
+| `rule_unreadable` | a `rule` path was given but could not be read, so no stored fingerprint can be trusted to mean "same rules" |
+| `resolver_error` | the comment could not be read, or `git merge-base --is-ancestor` could not run |
+
+Three outputs report what happened: `range_mode` (`checkpoint` or `full`), `range_summary` (the mode, the reason, and the range), and `checkpoint_after` (the head recorded as the new checkpoint, or empty when the run did not advance one).
+
+Two properties are worth knowing before you enable it:
+
+- **Widen-only.** The start of the range only ever moves back. An older checkpoint produces a wider review, never a narrower one, and a checkpoint only advances past a run whose manifest reported `terminal_state: complete`, which failed to post nothing, and whose summary comment actually published. A run that fails halfway carries the previous checkpoint forward unchanged rather than skipping the range it did not review.
+- **Same-head reruns are empty.** Re-running the workflow without pushing produces a `checkpoint` range with `from == to` — nothing new to review.
+- **The sticky summary shows the latest range, not the whole PR.** The summary comment is rewritten on every run, so findings it reported for an earlier range (findings with no line information, routed findings, warnings) are replaced by the new range's. Inline review comments are separate comments and stay. If you rely on the summary as a running list for the whole PR, use `full_review: 'true'` to rebuild it, or leave `checkpoint_range` off.
+
+> **Caveat — what `complete` covers.** `terminal_state: complete` means nothing in the set the run *selected* failed. Items the run waived, or excluded before selection (unsupported files, size limits), are inside that guarantee. So a checkpoint means "everything this configuration chose to review was reviewed", not "every byte of the diff was read". Changing the configuration invalidates the checkpoint (`config_changed`), which is what keeps that promise honest across runs.
+
+> **Custom rules are fingerprinted by content.** If you pass `rule`, the checkpoint fingerprint covers that file's *contents*, not just its path — editing your rule file invalidates the checkpoint (`config_changed`) so the next run re-reviews from the merge-base under the new rules, rather than narrowing to the newest commits. The built-in rule set is embedded in the binary and moves with `ocr_version`, which is already part of the fingerprint. A `rule` path that cannot be read forces a full review (`rule_unreadable`).
+
+> **Caveat — the trust boundary is write permission.** The checkpoint is read only from a comment authored by this workflow's own token, verified against the API rather than by matching the `github-actions[bot]` name. That proves who *posted* the comment, not that its body is unmodified: anyone with write permission on the repository can edit a bot comment and move the checkpoint forward, causing a range to be skipped. The boundary this buys is "write-permission holders are trusted" — a fork contributor, who is exactly the untrusted party under `pull_request_target`, cannot plant or alter a marker. If that is not an acceptable assumption for your repository, leave `checkpoint_range` off.
+
 ### Adjust retry and delay settings
 
 When posting review comments individually (fallback mode), the action honors GitHub rate-limit headers (`retry-after`, `x-ratelimit-*`) with exponential backoff. The retry strategy follows GitHub's documented guidance for REST API rate limits — see [Rate limits for the REST API](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2026-03-10) for details on primary/secondary rate limits and recommended retry behavior:

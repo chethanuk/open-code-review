@@ -119,6 +119,25 @@ inputs:
       with route_severity_below to route on either condition.
     required: false
     default: ''
+  checkpoint_range:
+    description: >-
+      Cross-push checkpoints. true = a run that reviewed everything it selected
+      records the head it covered in its sticky summary comment, and the next
+      run reviews only <checkpoint>..<new head> instead of
+      <merge-base>..<new head>. Fail-closed: if anything is in doubt — the
+      summary is missing or was not posted by this token, the marker is
+      unreadable, the base moved, the configuration changed, or git cannot prove
+      the checkpoint is an ancestor of the new head — the full range is reviewed
+      exactly as it is today. Requires sticky_summary; ignored without it.
+    required: false
+    default: 'false'
+  full_review:
+    description: >-
+      Force one full review even when checkpoint_range is enabled (reason
+      'manual_full_review'). Use it to re-review a PR from the merge-base
+      without turning checkpointing off; the run still records a new checkpoint.
+    required: false
+    default: 'false'
   base_ref:
     description: >-
       Override the base ref. Provide this (and head_sha) when invoking from a
@@ -154,6 +173,24 @@ outputs:
   summary_comment_url:
     description: URL of the posted/updated summary comment, if any.
     value: ${{ steps.post.outputs.summary_comment_url }}
+  range_mode:
+    description: >-
+      'checkpoint' when this run reviewed only the range since the previous
+      checkpoint, 'full' when it reviewed from the merge-base. Empty when
+      checkpoint_range is not enabled.
+    value: ${{ steps.range.outputs.range_mode }}
+  range_summary:
+    description: >-
+      The reviewed range plus the reason it was chosen, e.g.
+      "full (base_changed)" or "checkpoint (ok): <from>..<to>". Empty when
+      checkpoint_range is not enabled.
+    value: ${{ steps.range.outputs.range_summary }}
+  checkpoint_after:
+    description: >-
+      The head this run recorded as the new checkpoint, or empty when it did not
+      advance one (incomplete run, a finding failed to post, or the summary did
+      not publish).
+    value: ${{ steps.post.outputs.checkpoint_after }}
 
 runs:
   using: composite
@@ -252,6 +289,11 @@ runs:
         npm install -g "@alibaba-group/open-code-review@${OCR_VERSION}"
         echo "OpenCodeReview installed:"
         ocr version || true
+        # Resolved version (not the spec, which is usually "latest"). It feeds
+        # the checkpoint fingerprint so an OCR upgrade invalidates checkpoints
+        # taken by the previous version.
+        VERSION_ACTUAL=$(ocr version 2>/dev/null | head -n 1 | tr -d '\r' || true)
+        echo "OCR_VERSION_ACTUAL=${VERSION_ACTUAL}" >> "$GITHUB_ENV"
 
     - name: Configure OCR
       env:
@@ -261,6 +303,114 @@ runs:
       run: |
         ocr config set llm.extra_body "$OCR_EXTRA_BODY"
         ocr config set language "$OCR_LANGUAGE"
+
+    - name: Resolve review range
+      if: inputs.checkpoint_range == 'true'
+      id: range
+      uses: actions/github-script@v9
+      env:
+        OCR_FULL_REVIEW: ${{ inputs.full_review }}
+        OCR_STICKY_SUMMARY: ${{ inputs.sticky_summary }}
+        # Everything that changes what a review would say. Any difference
+        # invalidates the checkpoint, because findings from the previous run are
+        # no longer comparable to what this configuration would produce.
+        OCR_FINGERPRINT_INPUTS: >-
+          ${{ inputs.llm_url }}|${{ inputs.llm_model }}|${{ inputs.llm_use_anthropic }}|${{
+          inputs.language }}|${{ inputs.llm_extra_body }}|${{ inputs.rule }}|${{
+          inputs.route_severity_below }}|${{ inputs.route_categories }}
+        OCR_RULE_PATH: ${{ inputs.rule }}
+      with:
+        github-token: ${{ inputs.github_token }}
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const { spawnSync } = require('child_process');
+          // Same helper lookup as the posting step below.
+          const REL = 'scripts/github-actions/post-review-comments.js';
+          const roots = [process.env.GITHUB_ACTION_PATH, process.env.GITHUB_WORKSPACE].filter(Boolean);
+          const helper = roots.map(r => path.resolve(r, REL)).find(p => fs.existsSync(p));
+          if (!helper) throw new Error(`Could not locate ${REL}; searched roots: ${roots.join(', ')}`);
+          const { resolveCheckpointRange, readCheckpointComment } = require(helper);
+
+          // `rule` names a JSON file that OCR reads off the workspace at review
+          // time (rules.NewResolver only touches disk when the path is non-empty;
+          // the default rule set is embedded in the binary and so already moves
+          // with OCR_VERSION_ACTUAL). Fingerprinting the *path* alone would let an
+          // edit to that file narrow the next range under rules the earlier
+          // commits were never reviewed against, so hash the contents too.
+          let ruleDigest = 'none';
+          let ruleUnverified = false;
+          const rulePath = process.env.OCR_RULE_PATH || '';
+          if (rulePath) {
+            try {
+              const abs = path.resolve(process.env.GITHUB_WORKSPACE || '.', rulePath);
+              ruleDigest = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex');
+            } catch (e) {
+              // Cannot prove the rules are unchanged -> do not narrow. OCR itself
+              // would normally have failed on an unreadable rule file before this
+              // step runs, so this is a belt-and-braces path.
+              ruleUnverified = true;
+              core.warning(`checkpoint: cannot read rule file ${rulePath} (${e.message}); forcing a full review.`);
+            }
+          }
+
+          const fingerprint = crypto.createHash('sha256')
+            .update(`${process.env.OCR_FINGERPRINT_INPUTS || ''}|${process.env.OCR_VERSION_ACTUAL || ''}|${ruleDigest}`)
+            .digest('hex')
+            .slice(0, 16);
+
+          // git's own ancestry verdict: 0 = ancestor, 1 = not, 128 = the object
+          // is not in this clone (shallow fetch, force-push, head_sha override).
+          // Anything else (git missing, signal) is a resolver error. Never
+          // treated as "ancestor" except on a literal 0.
+          const isAncestor = (a, b) =>
+            spawnSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: process.env.GITHUB_WORKSPACE }).status;
+
+          const common = {
+            github,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            prNumber: context.issue.number,
+            log: (m) => core.info(m),
+          };
+          // One read serves both purposes: the range decision, and the verbatim
+          // marker the posting step re-emits on a run that does not advance the
+          // checkpoint (the summary body is rewritten wholesale, which would
+          // otherwise erase it). Passing it into the resolver as `read` is what
+          // keeps this to a single listComments pagination per run.
+          const existing = await readCheckpointComment(common);
+          const range = await resolveCheckpointRange(Object.assign({}, common, {
+            read: existing,
+            enabled: true,
+            sticky: process.env.OCR_STICKY_SUMMARY === 'true',
+            fullReview: process.env.OCR_FULL_REVIEW === 'true',
+            headSha: process.env.HEAD_SHA || '',
+            baseRef: process.env.BASE_REF || '',
+            mergeBase: process.env.MERGE_BASE || '',
+            fingerprint,
+            isAncestor,
+          }));
+
+          // Last gate, applied after the ordered twelve: the rules this run will
+          // apply could not be read, so no stored fingerprint can be trusted to
+          // mean "same rules". Widening is always safe; narrowing is not.
+          if (ruleUnverified && range.mode === 'checkpoint') {
+            range.mode = 'full';
+            range.reason = 'rule_unreadable';
+          }
+
+          // Empty RANGE_FROM means "review the full range": the review step
+          // expands ${RANGE_FROM:-$MERGE_BASE}, so unset and empty behave alike.
+          core.exportVariable('RANGE_FROM', range.mode === 'checkpoint' ? range.from : '');
+          core.exportVariable('OCR_CONFIG_FINGERPRINT', fingerprint);
+          core.exportVariable('OCR_CHECKPOINT_CARRY', existing.raw || '');
+          const summary = range.mode === 'checkpoint'
+            ? `checkpoint (${range.reason}): ${range.from}..${range.to}`
+            : `full (${range.reason})`;
+          core.setOutput('range_mode', range.mode);
+          core.setOutput('range_summary', summary);
+          core.info(`[checkpoint] reviewing ${summary}`);
 
     - name: Run OpenCodeReview
       env:
@@ -276,7 +426,7 @@ runs:
         OCR_RULE: ${{ inputs.rule }}
       shell: bash
       run: |
-        ARGS=(--from "${MERGE_BASE}" --to "${HEAD_SHA}" --format json)
+        ARGS=(--from "${RANGE_FROM:-$MERGE_BASE}" --to "${HEAD_SHA}" --format json)
         [ -n "$OCR_REVIEW_CONCURRENCY" ] && ARGS+=(--concurrency "$OCR_REVIEW_CONCURRENCY")
         [ -n "$OCR_BACKGROUND" ] && ARGS+=(--background "$OCR_BACKGROUND")
         [ -n "$OCR_RULE" ] && ARGS+=(--rule "$OCR_RULE")
@@ -316,6 +466,11 @@ runs:
         OCR_REVIEW_COMMENT_BATCH_SIZE: ${{ inputs.review_comment_batch_size }}
         OCR_ROUTE_SEVERITY_BELOW: ${{ inputs.route_severity_below }}
         OCR_ROUTE_CATEGORIES: ${{ inputs.route_categories }}
+        # Set by the Resolve review range step; empty when checkpointing is off.
+        OCR_CHECKPOINT_CARRY: ${{ env.OCR_CHECKPOINT_CARRY }}
+        OCR_CONFIG_FINGERPRINT: ${{ env.OCR_CONFIG_FINGERPRINT }}
+        OCR_BASE_REF: ${{ env.BASE_REF }}
+        OCR_MERGE_BASE: ${{ env.MERGE_BASE }}
       with:
         github-token: ${{ inputs.github_token }}
         script: |
@@ -346,4 +501,9 @@ runs:
             reviewCommentBatchSize: parseInt(process.env.OCR_REVIEW_COMMENT_BATCH_SIZE, 10),
             routeSeverityBelow: process.env.OCR_ROUTE_SEVERITY_BELOW,
             routeCategories: process.env.OCR_ROUTE_CATEGORIES,
+            checkpointEnabled: ${{ inputs.checkpoint_range == 'true' }},
+            checkpointCarry: process.env.OCR_CHECKPOINT_CARRY || '',
+            checkpointBaseRef: process.env.OCR_BASE_REF || '',
+            checkpointMergeBase: process.env.OCR_MERGE_BASE || '',
+            checkpointFingerprint: process.env.OCR_CONFIG_FINGERPRINT || '',
           });
