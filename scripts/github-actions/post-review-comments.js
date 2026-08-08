@@ -84,6 +84,17 @@ async function runPostReviewComments({
   // (fail-open for the policy itself, upholding I1).
   routeSeverityBelow = "",
   routeCategories = "",
+  // Cross-push checkpoints (#476). Off by default: with checkpointEnabled
+  // false and an empty carry, every emitted body is byte-identical to today's.
+  // checkpointCarry is the raw marker string the resolve step read from the
+  // existing summary; it is re-emitted verbatim on any run that does not
+  // advance, because the summary body is rewritten wholesale and would
+  // otherwise erase the checkpoint.
+  checkpointEnabled = false,
+  checkpointCarry = "",
+  checkpointBaseRef = "",
+  checkpointMergeBase = "",
+  checkpointFingerprint = "",
 }) {
   const log = (msg) => {
     if (core && typeof core.info === "function") core.info(msg);
@@ -113,6 +124,61 @@ async function runPostReviewComments({
     failed: 0,
     routed: 0,
     summaryUrl: "",
+    checkpointAfter: "",
+  };
+
+  // ---- Checkpoint write path (#476) ----
+  //
+  // The checkpoint may only move forward past a run that published everything
+  // it found: terminal_state "complete" AND nothing failed to post AND a real
+  // 40-hex resolved head. Anything else re-emits the marker this run started
+  // with (carry-forward), so an unrelated failure never silently resets the PR
+  // to full reviews, and never silently skips a range that was not reviewed.
+  //
+  // The fourth condition — the summary was actually published — is enforced in
+  // two places: structurally, because the marker lives INSIDE the summary body
+  // (a summary that never lands carries no checkpoint), and explicitly on the
+  // checkpoint_after output in setStatsOutputs.
+  //
+  // NOTE on terminal_state: per computeTerminal (internal/session/manifest.go:941)
+  // "complete" means nothing in the SELECTED set failed. Items the run waived or
+  // excluded before selection are inside that guarantee, so "complete" is
+  // completeness relative to what the run chose to review — the strongest signal
+  // the manifest offers, and the reason the checkpoint tracks the run's own
+  // resolved_head rather than the runner's HEAD_SHA.
+  const buildAdvanceMarker = (manifest) => {
+    stats.checkpointAfter = "";
+    if (!checkpointEnabled || !stickySummary) return null;
+    if (!manifest || manifest.terminal_state !== "complete") return null;
+    if (stats.failed !== 0) return null;
+    const head = (manifest.input && manifest.input.resolved_head) || "";
+    if (!/^[0-9a-f]{40}$/.test(head)) return null;
+    stats.checkpointAfter = head;
+    return buildCheckpointMarker({
+      v: CHECKPOINT_VERSION,
+      pr: prNumber,
+      head,
+      base_ref: checkpointBaseRef,
+      merge_base: checkpointMergeBase,
+      terminal_state: "complete",
+      fingerprint: checkpointFingerprint,
+      run: String(context.runId != null ? context.runId : ""),
+    });
+  };
+  // Applied at every site that composes a summary body. Advancing supersedes the
+  // carry (a body must carry at most one marker); with neither, the body is
+  // exactly what it is today.
+  const appendCheckpoint = (body, manifest) => {
+    const marker = buildAdvanceMarker(manifest);
+    if (marker) return `${body}\n\n${marker}`;
+    // The carry is gated on the same two conditions as the advance. Without
+    // checkpointing there is nothing to carry; without a sticky summary each run
+    // posts a FRESH comment, so re-emitting a marker read from a previous run's
+    // comment would stamp a checkpoint onto a body that never carried one — and
+    // the resolver, which reads the newest summary, would then trust a head this
+    // run did not review.
+    if (!checkpointEnabled || !stickySummary) return body;
+    return checkpointCarry ? `${body}\n\n${checkpointCarry}` : body;
   };
 
   // Read OCR output.
@@ -124,7 +190,12 @@ async function runPostReviewComments({
     log(`Failed to parse OCR output: ${e.message}`);
     const stderr = safeRead(fs, stderrPath).trim();
     if (stderr) {
-      const body = `${SUMMARY_MARKER}\n⚠️ **OpenCodeReview** encountered an error:\n${fencedBlock(stderr)}`;
+      // No manifest exists on this path (the output could not be parsed), so it
+      // can only ever carry the previous checkpoint forward — never advance it.
+      const body = appendCheckpoint(
+        `${SUMMARY_MARKER}\n⚠️ **OpenCodeReview** encountered an error:\n${fencedBlock(stderr)}`,
+        null
+      );
       const posted = await postSummary({ github, owner, repo, prNumber, body, sticky: stickySummary, log });
       stats.summaryUrl = posted.url;
     }
@@ -139,7 +210,8 @@ async function runPostReviewComments({
   // No comments: post a "looks good" summary.
   if (comments.length === 0) {
     const message = result.message || "No comments generated. Looks good to me.";
-    const body = `${SUMMARY_MARKER}\n✅ **OpenCodeReview**: ${message}`;
+    // A clean run is still a complete run: this path advances the checkpoint.
+    const body = appendCheckpoint(`${SUMMARY_MARKER}\n✅ **OpenCodeReview**: ${message}`, result.manifest);
     const posted = await postSummary({ github, owner, repo, prNumber, body, sticky: stickySummary, log });
     stats.summaryUrl = posted.url;
     setStatsOutputs(out, stats);
@@ -343,7 +415,7 @@ async function runPostReviewComments({
     anchor,
     sticky: stickySummary,
     tag: SUMMARY_TAG,
-    body: wrapSummary(summaryBody),
+    body: wrapSummary(appendCheckpoint(summaryBody, result.manifest)),
     log,
   });
   if (finalized) stats.summaryUrl = finalized.url;
@@ -773,6 +845,11 @@ function setStatsOutputs(out, stats, batchCounters, batchSize) {
   out("comments_routed", String(stats.routed));
   out("comments_failed", String(stats.failed));
   out("summary_comment_url", stats.summaryUrl || "");
+  // The head this run's checkpoint advanced to, or "" when it did not advance
+  // (#476). Gated on summaryUrl because the marker lives inside the summary
+  // comment: a summary that never published carries no checkpoint, so claiming
+  // one on the output would lie to the caller.
+  out("checkpoint_after", stats.summaryUrl && stats.checkpointAfter ? stats.checkpointAfter : "");
   // Per-batch telemetry (B7). These are additional outputs; the five above are
   // unchanged so existing consumers of comments_* / summary_comment_url are
   // unaffected. batch_summary is a single JSON string so a fleet dashboard can
@@ -2059,6 +2136,235 @@ async function getPrDiffHunks({ github, owner, repo, prNumber, commitSha, log, c
   return diff;
 }
 
+// ---- Cross-push checkpoints (#476) ----
+//
+// Opt-in. A run that provably reviewed everything it selected records the head
+// it covered in a hidden marker inside its sticky summary comment; the next run
+// may then review only <checkpoint head>..<new head> instead of
+// <merge-base>..<new head>, so a 40-commit PR is not re-reviewed from scratch
+// on every push.
+//
+// The whole design is fail-closed: resolveCheckpointRange runs an ordered gate
+// and ANY doubt — feature off, summary missing, marker unreadable, base moved,
+// config changed, ancestry unprovable — returns mode "full", which reviews the
+// same range the action reviews today. The narrowed range is only ever taken
+// when every condition holds.
+//
+// TRUST BOUNDARY: the marker is read only from a comment authored by this run's
+// own authenticated identity. That proves who POSTED the comment, not that its
+// body is unmodified — anyone with write permission on the repository can edit
+// a bot comment. So the boundary this buys is "write-permission holders are
+// trusted"; a fork contributor (no write permission) cannot plant or alter a
+// marker, which is the case that matters for pull_request_target.
+
+const CHECKPOINT_VERSION = 1;
+// Marker shape: an HTML comment (invisible in the rendered summary) carrying a
+// base64 JSON payload, so payload text can contain "-->" or newlines without
+// breaking out of the comment.
+const CHECKPOINT_MARKER_PATTERN = "<!-- ocr-checkpoint:v1 ([A-Za-z0-9+/]+={0,2}) -->";
+const CHECKPOINT_SHA_RE = /^[0-9a-f]{40}$/;
+
+function buildCheckpointMarker(payload) {
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+  return `<!-- ocr-checkpoint:v1 ${encoded} -->`;
+}
+
+// Extract the checkpoint payload from a comment body, or null when the body
+// carries no readable checkpoint. Null covers BOTH "no marker at all" (the
+// normal first run on a PR) and "marker present but unusable"; the caller maps
+// both to the same fail-closed reason because neither yields a usable range.
+// Two markers in one body are ambiguous and therefore also null.
+function parseCheckpointMarker(body) {
+  if (typeof body !== "string" || body === "") return null;
+  const re = new RegExp(CHECKPOINT_MARKER_PATTERN, "g");
+  const found = [];
+  let m;
+  while ((m = re.exec(body)) !== null) found.push(m[1]);
+  if (found.length !== 1) return null;
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(found[0], "base64").toString("utf8"));
+  } catch (e) {
+    return null;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  return payload;
+}
+
+// Structural validation of a parsed payload. Returns null when the payload is
+// usable, otherwise a short human-readable reason (logged, not branched on).
+//
+// terminal_state must be "complete". NOTE: per computeTerminal
+// (internal/session/manifest.go:941) "complete" means no item in the SELECTED
+// set failed — waived items and items excluded before selection are INSIDE
+// that guarantee, i.e. "complete" is completeness with respect to what the run
+// chose to review, not with respect to the whole diff. That is the strongest
+// signal the manifest offers, and it is why the range is only ever narrowed
+// past a run that reported it.
+function validateCheckpointPayload(payload, { prNumber } = {}) {
+  if (!payload) return "no payload";
+  if (payload.v !== CHECKPOINT_VERSION) return `unsupported version ${JSON.stringify(payload.v)}`;
+  if (prNumber != null && payload.pr !== prNumber) return `belongs to PR ${JSON.stringify(payload.pr)}`;
+  if (!CHECKPOINT_SHA_RE.test(payload.head)) return "head is not a 40-hex sha";
+  if (payload.terminal_state !== "complete") return `terminal_state ${JSON.stringify(payload.terminal_state)}`;
+  if (typeof payload.base_ref !== "string" || payload.base_ref === "") return "missing base_ref";
+  if (typeof payload.merge_base !== "string" || payload.merge_base === "") return "missing merge_base";
+  if (typeof payload.fingerprint !== "string" || payload.fingerprint === "") return "missing fingerprint";
+  return null;
+}
+
+// Read the checkpoint payload out of this PR's sticky summary comment, with the
+// author check applied. Returns { reason, payload, raw }:
+//   reason "ok"              -> payload is the marker's decoded payload and raw
+//                               is the marker string, byte for byte as read
+//   "no_summary_comment"     -> no sticky summary exists yet
+//   "author_unverified"      -> the summary was not posted by this identity
+//   "corrupt_checkpoint"     -> no readable marker in the body
+//   "resolver_error"         -> the comment could not be listed at all
+async function readCheckpointComment({ github, owner, repo, prNumber, log }) {
+  let comment;
+  try {
+    comment = await findSummaryIssueComment({
+      github,
+      owner,
+      repo,
+      prNumber,
+      sticky: true,
+      tag: "",
+      log,
+    });
+  } catch (e) {
+    log(`[checkpoint] cannot list issue comments (${e.message}); reviewing the full range.`);
+    return { reason: "resolver_error", payload: null, raw: "" };
+  }
+  if (!comment) return { reason: "no_summary_comment", payload: null, raw: "" };
+
+  const botLogin = await getAuthenticatedLogin(github, log);
+  // Fail closed on an unresolvable identity: do NOT fall back to matching the
+  // literal "github-actions[bot]" login (isBotComment's secondary path), since
+  // a name is not evidence of authorship.
+  if (!botLogin) {
+    log("[checkpoint] authenticated identity unavailable; reviewing the full range.");
+    return { reason: "author_unverified", payload: null, raw: "" };
+  }
+  // isBotComment is the coarse "is this ours" test used by the dedup paths; it
+  // also accepts any login ending in "github-actions[bot]". That is too loose
+  // here, so the identity must ALSO match exactly: when this run authenticates
+  // as a GitHub App, a marker left by the default GITHUB_TOKEN is a different
+  // writer and must not be trusted.
+  if (!isBotComment(comment, botLogin) || (comment.user && comment.user.login) !== botLogin) {
+    log("[checkpoint] summary comment was not authored by this token; reviewing the full range.");
+    return { reason: "author_unverified", payload: null, raw: "" };
+  }
+
+  const body = comment.body || "";
+  const payload = parseCheckpointMarker(body);
+  if (!payload) return { reason: "corrupt_checkpoint", payload: null, raw: "" };
+  const raw = (new RegExp(CHECKPOINT_MARKER_PATTERN).exec(body) || [""])[0];
+  return { reason: "ok", payload, raw };
+}
+
+// The ordered gate. Returns exactly eight keys:
+//   mode             "checkpoint" | "full"
+//   reason           "ok" | one of the twelve fail-closed reasons
+//   from             the checkpoint head to review from ("" in full mode, so the
+//                    caller's ${RANGE_FROM:-$MERGE_BASE} keeps today's range)
+//   to               headSha
+//   checkpointBefore the head recorded by the marker that was read, if any
+//   ancestry         "" (not probed) | ancestor | not_ancestor | unknown_object | error
+//   sourceRun        the run id that wrote the marker, if any
+//   fingerprint      the config fingerprint the marker recorded, if any
+//
+// isAncestor(a, b) must resolve to git's `merge-base --is-ancestor` exit code:
+// 0 = a is an ancestor of b, 1 = it is not, 128 = the object is not in this
+// clone. 128 is deliberately NOT treated as "not an ancestor": it means we
+// could not check, and it is the state a shallow clone or a head_sha override
+// (no PR to fetch from) produces, so it gets its own reason to stay greppable.
+async function resolveCheckpointRange({
+  github,
+  owner,
+  repo,
+  prNumber,
+  enabled = false,
+  sticky = true,
+  fullReview = false,
+  headSha = "",
+  baseRef = "",
+  mergeBase = "",
+  fingerprint = "",
+  isAncestor,
+  // Optional pre-read from readCheckpointComment. The caller needs the raw
+  // marker string anyway (to carry it forward on a run that does not advance),
+  // and that read costs a full listComments pagination plus an identity lookup.
+  // Passing it in keeps the whole feature at one read per run and makes the
+  // range decision and the carried marker come from the same observation.
+  read = null,
+  log = () => {},
+}) {
+  const full = (reason, seen) =>
+    Object.assign(
+      {
+        mode: "full",
+        reason,
+        from: "",
+        to: headSha,
+        checkpointBefore: "",
+        ancestry: "",
+        sourceRun: "",
+        fingerprint: "",
+      },
+      seen
+    );
+
+  if (!enabled) return full("disabled");
+  if (!sticky) return full("sticky_disabled");
+  if (fullReview) return full("manual_full_review");
+
+  const seenComment = read || (await readCheckpointComment({ github, owner, repo, prNumber, log }));
+  if (seenComment.reason !== "ok") return full(seenComment.reason);
+
+  const p = seenComment.payload;
+  const seen = {
+    checkpointBefore: typeof p.head === "string" ? p.head : "",
+    sourceRun: typeof p.run === "string" ? p.run : "",
+    fingerprint: typeof p.fingerprint === "string" ? p.fingerprint : "",
+  };
+
+  const invalid = validateCheckpointPayload(p, { prNumber });
+  if (invalid) {
+    log(`[checkpoint] marker rejected (${invalid}); reviewing the full range.`);
+    return full("schema_invalid", seen);
+  }
+  // The base moved (branch advanced, rebase, different base ref): the diff basis
+  // is no longer the one the checkpoint was taken against, so nothing about the
+  // earlier review carries over.
+  if (p.base_ref !== baseRef || p.merge_base !== mergeBase) return full("base_changed", seen);
+  // Model/prompt/rules/version changed: earlier findings are not comparable.
+  if (p.fingerprint !== fingerprint) return full("config_changed", seen);
+
+  let status;
+  try {
+    status = await isAncestor(p.head, headSha);
+  } catch (e) {
+    log(`[checkpoint] ancestry check failed (${e.message}); reviewing the full range.`);
+    return full("resolver_error", seen);
+  }
+  if (status === 1) return full("not_ancestor", Object.assign({ ancestry: "not_ancestor" }, seen));
+  if (status === 128) return full("unknown_object", Object.assign({ ancestry: "unknown_object" }, seen));
+  if (status !== 0) return full("resolver_error", Object.assign({ ancestry: "error" }, seen));
+
+  return {
+    mode: "checkpoint",
+    reason: "ok",
+    from: p.head,
+    to: headSha,
+    checkpointBefore: p.head,
+    ancestry: "ancestor",
+    sourceRun: seen.sourceRun,
+    fingerprint: p.fingerprint,
+  };
+}
+
 module.exports = {
   runPostReviewComments,
   postSummary,
@@ -2115,4 +2421,10 @@ module.exports = {
   isLineResolutionFailure,
   cooldownAndReconcile,
   getPrDiffHunks,
+  buildCheckpointMarker,
+  parseCheckpointMarker,
+  validateCheckpointPayload,
+  readCheckpointComment,
+  resolveCheckpointRange,
+  CHECKPOINT_VERSION,
 };
