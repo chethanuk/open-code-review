@@ -318,6 +318,7 @@ runs:
           ${{ inputs.llm_url }}|${{ inputs.llm_model }}|${{ inputs.llm_use_anthropic }}|${{
           inputs.language }}|${{ inputs.llm_extra_body }}|${{ inputs.rule }}|${{
           inputs.route_severity_below }}|${{ inputs.route_categories }}
+        OCR_RULE_PATH: ${{ inputs.rule }}
       with:
         github-token: ${{ inputs.github_token }}
         script: |
@@ -332,8 +333,30 @@ runs:
           if (!helper) throw new Error(`Could not locate ${REL}; searched roots: ${roots.join(', ')}`);
           const { resolveCheckpointRange, readCheckpointComment } = require(helper);
 
+          // `rule` names a JSON file that OCR reads off the workspace at review
+          // time (rules.NewResolver only touches disk when the path is non-empty;
+          // the default rule set is embedded in the binary and so already moves
+          // with OCR_VERSION_ACTUAL). Fingerprinting the *path* alone would let an
+          // edit to that file narrow the next range under rules the earlier
+          // commits were never reviewed against, so hash the contents too.
+          let ruleDigest = 'none';
+          let ruleUnverified = false;
+          const rulePath = process.env.OCR_RULE_PATH || '';
+          if (rulePath) {
+            try {
+              const abs = path.resolve(process.env.GITHUB_WORKSPACE || '.', rulePath);
+              ruleDigest = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex');
+            } catch (e) {
+              // Cannot prove the rules are unchanged -> do not narrow. OCR itself
+              // would normally have failed on an unreadable rule file before this
+              // step runs, so this is a belt-and-braces path.
+              ruleUnverified = true;
+              core.warning(`checkpoint: cannot read rule file ${rulePath} (${e.message}); forcing a full review.`);
+            }
+          }
+
           const fingerprint = crypto.createHash('sha256')
-            .update(`${process.env.OCR_FINGERPRINT_INPUTS || ''}|${process.env.OCR_VERSION_ACTUAL || ''}`)
+            .update(`${process.env.OCR_FINGERPRINT_INPUTS || ''}|${process.env.OCR_VERSION_ACTUAL || ''}|${ruleDigest}`)
             .digest('hex')
             .slice(0, 16);
 
@@ -368,6 +391,14 @@ runs:
             fingerprint,
             isAncestor,
           }));
+
+          // Last gate, applied after the ordered twelve: the rules this run will
+          // apply could not be read, so no stored fingerprint can be trusted to
+          // mean "same rules". Widening is always safe; narrowing is not.
+          if (ruleUnverified && range.mode === 'checkpoint') {
+            range.mode = 'full';
+            range.reason = 'rule_unreadable';
+          }
 
           // Empty RANGE_FROM means "review the full range": the review step
           // expands ${RANGE_FROM:-$MERGE_BASE}, so unset and empty behave alike.
