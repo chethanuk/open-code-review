@@ -1126,7 +1126,7 @@ query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
           isResolved
           originalLine
           originalStartLine
-          comments(first: 100) { totalCount nodes { author { login } } }
+          comments(first: 100) { totalCount nodes { author { login __typename } } }
         }
       }
     }
@@ -1179,6 +1179,21 @@ async function listBotReviewThreads({ github, owner, repo, prNumber, log, warn }
   return all;
 }
 
+// GraphQL's reviewThreads returns a bot's SLUG ("github-actions") where REST —
+// and therefore getAuthenticatedLogin() and isBotComment() — uses the suffixed
+// form ("github-actions[bot]"). Measured on a live PR: the same comment reads
+// `github-actions` with __typename "Bot" through GraphQL and
+// `github-actions[bot]` through REST. Comparing the raw GraphQL login against a
+// REST-shaped botLogin would make every one of our own threads look like a
+// human reply, so the feature would resolve nothing and look merely inert.
+// Normalizing here keeps isBotComment's REST contract untouched for incremental
+// mode, which is its other caller.
+function graphqlAuthorLogin(author) {
+  if (!author || !author.login) return "";
+  const login = String(author.login);
+  return author.__typename === "Bot" && !/\[bot\]$/i.test(login) ? `${login}[bot]` : login;
+}
+
 // Pure predicate: may this thread be resolved, and if not, why not?
 // Returns "resolve" | "not_outdated" | "already_resolved" | "unverified" |
 // "human_reply" | "overlap".
@@ -1200,7 +1215,7 @@ function shouldResolveThread(thread, { botLogin, currentSpans = [], overlapThres
   const total = thread.comments && thread.comments.totalCount;
   if (nodes.length === 0 || (typeof total === "number" && total > nodes.length)) return "unverified";
   for (const c of nodes) {
-    const login = c && c.author && c.author.login ? c.author.login : "";
+    const login = graphqlAuthorLogin(c && c.author);
     if (!isBotComment({ user: { login } }, botLogin)) return "human_reply";
   }
   // A thread whose ORIGINAL lines are still covered by a finding from this run
@@ -1209,6 +1224,13 @@ function shouldResolveThread(thread, { botLogin, currentSpans = [], overlapThres
   // incremental same-comment test (lineSpan + sameCommentSpan + resolveThreshold
   // via overlapsHistory) so the two features can never disagree about identity.
   const span = { path: thread.path, start_line: thread.originalStartLine, line: thread.originalLine };
+  // No usable original line means overlapsHistory can only ever answer "no
+  // overlap", so the veto below is unreachable for this thread — and that veto
+  // is the whole mitigation for GitHub reporting a still-live finding's thread
+  // as outdated after a force-push. Resolving on a check that cannot fail is
+  // worse than leaving the thread open, so treat it exactly like a partial
+  // comment view.
+  if (!lineSpan(span)) return "unverified";
   if (overlapsHistory(span, currentSpans, overlapThreshold)) return "overlap";
   return "resolve";
 }

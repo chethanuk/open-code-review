@@ -3297,7 +3297,29 @@ function testShouldResolveThreadTable() {
     // viewerCanResolve reports false for tokens that CAN resolve, so the
     // predicate must ignore it entirely (no "cannot_resolve" outcome exists).
     { name: "viewerCanResolve:false is ignored", thread: botThread({ viewerCanResolve: false }), spans: sameLine.slice(0, 0), want: "resolve" },
-    { name: "no original line information", thread: botThread({ originalLine: null, originalStartLine: null }), spans: sameLine, want: "resolve" },
+    // With no usable original line the overlap veto below cannot fire, so the
+    // thread would be resolved on a check that is structurally unable to fail.
+    // That veto is the mitigation for a force-push marking a still-live
+    // finding's thread outdated, so this must stay open, not resolve.
+    { name: "no original line information", thread: botThread({ originalLine: null, originalStartLine: null }), spans: sameLine, want: "unverified" },
+    { name: "no original line information, nothing current either", thread: botThread({ originalLine: null, originalStartLine: null }), spans: [], want: "unverified" },
+    // GraphQL returns the bot SLUG; getAuthenticatedLogin/isBotComment use the
+    // REST "[bot]"-suffixed form. Measured on a live PR: the same comment is
+    // `github-actions` (__typename Bot) via GraphQL and `github-actions[bot]`
+    // via REST. Without normalizing, every one of our own threads reads as a
+    // human reply and the feature silently resolves nothing.
+    {
+      name: "GraphQL bot slug without [bot] still counts as ours",
+      thread: botThread({ comments: { totalCount: 1, nodes: [{ author: { login: "github-actions", __typename: "Bot" } }] } }),
+      spans: [],
+      want: "resolve",
+    },
+    {
+      name: "a User whose login merely looks bot-ish is still a human",
+      thread: botThread({ comments: { totalCount: 1, nodes: [{ author: { login: "github-actions", __typename: "User" } }] } }),
+      spans: [],
+      want: "human_reply",
+    },
     { name: "same line on a DIFFERENT path never vetoes", thread: botThread({ path: "src/b.js" }), spans: sameLine, want: "resolve" },
     { name: "not outdated", thread: botThread({ isOutdated: false }), spans: [], want: "not_outdated" },
     { name: "isOutdated absent", thread: botThread({ isOutdated: undefined }), spans: [], want: "not_outdated" },
