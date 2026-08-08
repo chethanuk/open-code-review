@@ -183,7 +183,7 @@ steps:
       resolve_outdated: 'report'
 ```
 
-A thread is left alone whenever **a human has replied** to it, when it is already resolved, when a finding from the current run still covers its lines, or when it has more comments than one API page returns (so a reply the action cannot see is never resolved over). Resolution also runs only after a run that actually produced findings: a run that failed to parse OCR's output, or that reported nothing, resolves nothing — "the model said nothing this time" is not evidence the old findings are gone. At most 50 threads are resolved per run; the rest carry over to the next one.
+A thread is left alone unless **the action created it**. Ownership is decided by the marker OCR writes into every inline comment it posts, not by the comment's author — under the default `GITHUB_TOKEN` every workflow in your repository posts as `github-actions[bot]`, so a sibling workflow's review threads would otherwise be indistinguishable from OCR's own. Beyond that, a thread is left alone whenever **a human has replied** to it, when it is already resolved, when a finding from the current run still covers its lines, or when it has more comments than one API page returns (so a reply the action cannot see is never resolved over). Resolution also runs only after a run that actually produced findings: a run that failed to parse OCR's output, or that reported nothing, resolves nothing — "the model said nothing this time" is not evidence the old findings are gone. At most 50 threads are resolved per run; the rest carry over to the next one.
 
 Outputs: `comments_resolved` (threads resolved, `'true'` mode) and `comments_resolved_preview` (threads that would be resolved, `'report'` mode). Both are always present.
 

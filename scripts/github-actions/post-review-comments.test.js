@@ -3251,8 +3251,14 @@ const {
 
 const BOT = "github-actions[bot]";
 
-// An outdated, unresolved, bot-only thread on src/a.js:10 — the one shape that
-// is resolvable. Every case below is this minus exactly one condition.
+// A root body carrying the marker OCR stamps into every inline comment it
+// creates (`ocr-<runId>-<runAttempt>-<random hex>`, per newCommentId). This is
+// what proves a thread is ours, so the resolvable fixture must carry it.
+const OURS = "<!-- ocr-42-1-deadbeefcafe1234 -->\nfindings go here";
+
+// An outdated, unresolved, bot-only thread on src/a.js:10 that OCR created —
+// the one shape that is resolvable. Every case below is this minus exactly one
+// condition.
 function botThread(over = {}) {
   return Object.assign(
     {
@@ -3263,6 +3269,7 @@ function botThread(over = {}) {
       originalLine: 10,
       originalStartLine: null,
       comments: { nodes: [{ author: { login: BOT } }] },
+      root: { nodes: [{ body: OURS }] },
     },
     over
   );
@@ -3321,6 +3328,38 @@ function testShouldResolveThreadTable() {
       want: "human_reply",
     },
     { name: "same line on a DIFFERENT path never vetoes", thread: botThread({ path: "src/b.js" }), spans: sameLine, want: "resolve" },
+    // Ownership is the marker, not the author. Every workflow in a repo using
+    // the default GITHUB_TOKEN posts as this same identity, so these threads
+    // are bot-authored AND indistinguishable from ours by author alone — yet
+    // they are someone else's conversation and must never be resolved.
+    {
+      name: "a sibling workflow's thread under the same bot identity is not ours",
+      thread: botThread({ root: { nodes: [{ body: "Dependency update available." }] } }),
+      spans: [],
+      want: "not_ours",
+    },
+    { name: "root body absent", thread: botThread({ root: undefined }), spans: [], want: "not_ours" },
+    { name: "root present but empty", thread: botThread({ root: { nodes: [] } }), spans: [], want: "not_ours" },
+    // The marker is anchored to its HTML comment wrapper, so a body that merely
+    // mentions the ID (a quote, a code block, a suggestion echoing our comment)
+    // cannot pass ownership off to another author's thread.
+    {
+      name: "an unwrapped mention of an OCR id does not prove ownership",
+      thread: botThread({ root: { nodes: [{ body: "re: ocr-42-1-deadbeefcafe1234 — see above" }] } }),
+      spans: [],
+      want: "not_ours",
+    },
+    // "Not ours" is answered before the author loop: a thread we did not create
+    // is not ours to classify, so a human reply on it is not our business.
+    {
+      name: "not ours outranks a human reply",
+      thread: botThread({
+        root: { nodes: [{ body: "some other bot" }] },
+        comments: { nodes: [{ author: { login: BOT } }, { author: { login: "octocat" } }] },
+      }),
+      spans: [],
+      want: "not_ours",
+    },
     { name: "not outdated", thread: botThread({ isOutdated: false }), spans: [], want: "not_outdated" },
     { name: "isOutdated absent", thread: botThread({ isOutdated: undefined }), spans: [], want: "not_outdated" },
     { name: "already resolved", thread: botThread({ isResolved: true }), spans: [], want: "already_resolved" },

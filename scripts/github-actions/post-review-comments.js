@@ -1103,6 +1103,13 @@ function num(v) {
   return Number.isFinite(n) && n >= 1 ? n : null;
 }
 
+// The one description of OCR's inline-comment marker. Two call sites depend on
+// it — the retry idempotency check (getPostedCommentIds) and the resolve
+// ownership check (threadIsOurs) — and a drift between them would be silent in
+// both directions, so they are built from this single source. Anchored to the
+// HTML comment wrapper so user content or a quoted suggestion cannot forge it.
+const OCR_COMMENT_ID_SOURCE = String.raw`<!--\s*(ocr-\d+-\d+-[a-f0-9]+)\s*-->`;
+
 // ---- Outdated thread resolution (#567) ----
 //
 // Deterministic, zero-LLM cleanup of the bot's OWN stale inline threads. The
@@ -1127,6 +1134,11 @@ query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
           originalLine
           originalStartLine
           comments(first: 100) { totalCount nodes { author { login __typename } } }
+          # Aliased second selection so only the ROOT comment's body crosses the
+          # wire: ownership is proved by the marker OCR stamps on the comment it
+          # created, and replies cannot carry that proof. Fetching every body
+          # would multiply the payload for a field only nodes[0] is read from.
+          root: comments(first: 1) { nodes { body } }
         }
       }
     }
@@ -1179,6 +1191,19 @@ async function listBotReviewThreads({ github, owner, repo, prNumber, log, warn }
   return all;
 }
 
+// Does this thread's ROOT comment carry a marker OCR wrote? Only the root is
+// consulted: OCR creates a thread and never replies into one, so a marker
+// appearing deeper would mean someone quoted our comment back at us, which is
+// evidence of a human conversation rather than of ownership. A thread whose
+// root body did not come back (older data, a truncated response) is not
+// demonstrably ours and returns false — the fail-closed direction, since the
+// cost is a stale thread left open rather than someone else's thread resolved.
+function threadIsOurs(thread) {
+  const root = thread && thread.root && thread.root.nodes && thread.root.nodes[0];
+  const body = (root && root.body) || "";
+  return new RegExp(OCR_COMMENT_ID_SOURCE).test(body);
+}
+
 // GraphQL's reviewThreads returns a bot's SLUG ("github-actions") where REST —
 // and therefore getAuthenticatedLogin() and isBotComment() — uses the suffixed
 // form ("github-actions[bot]"). Measured on a live PR: the same comment reads
@@ -1196,7 +1221,7 @@ function graphqlAuthorLogin(author) {
 
 // Pure predicate: may this thread be resolved, and if not, why not?
 // Returns "resolve" | "not_outdated" | "already_resolved" | "unverified" |
-// "human_reply" | "overlap".
+// "not_ours" | "human_reply" | "overlap".
 //
 // Deliberately does NOT consult `viewerCanResolve`: it reports false for tokens
 // that can in fact resolve the thread, so gating on it would silently disable
@@ -1214,6 +1239,17 @@ function shouldResolveThread(thread, { botLogin, currentSpans = [], overlapThres
   // both stay open rather than being resolved on a partial view.
   const total = thread.comments && thread.comments.totalCount;
   if (nodes.length === 0 || (typeof total === "number" && total > nodes.length)) return "unverified";
+  // Authorship alone cannot establish that WE created this thread. Every
+  // workflow in a repo that uses the default GITHUB_TOKEN posts as the same
+  // identity, so a sibling workflow's outdated review threads are
+  // indistinguishable from ours by author; and under a GitHub App token the
+  // `github-actions[bot]` fallback in isBotComment would accept those threads
+  // outright. The marker OCR stamps into every inline comment it creates
+  // (newCommentId, via formatComment) is the actual proof of authorship, so it
+  // is what the destructive path gates on. Checked before the human-reply loop
+  // because "not ours" is the more fundamental answer: a thread we did not
+  // create is not ours to classify, let alone resolve.
+  if (!threadIsOurs(thread)) return "not_ours";
   for (const c of nodes) {
     const login = graphqlAuthorLogin(c && c.author);
     if (!isBotComment({ user: { login } }, botLogin)) return "human_reply";
@@ -1581,13 +1617,12 @@ async function getPostedCommentIds({ github, owner, repo, prNumber, log }) {
     github.rest.pulls.listReviewComments({ owner, repo, pull_number: prNumber, per_page, page }), log
   );
   const ids = new Set();
-  // Anchor the regex to the HTML comment wrapper (<!-- ocr-... -->) so
-  // user-generated content or code suggestions cannot trigger false positives
-  // in the idempotency check. The ID format is `ocr-<RUN_TAG>-<random>` where
-  // RUN_TAG is `<runId>-<runAttempt>` and <random> is a per-comment random
-  // hex token. Capture group 1 holds the bare ID, so we can add it directly
-  // without stripping comment markers.
-  const ID_RE = /<!--\s*(ocr-\d+-\d+-[a-f0-9]+)\s*-->/g;
+  // The ID format is `ocr-<RUN_TAG>-<random>` where RUN_TAG is
+  // `<runId>-<runAttempt>` and <random> is a per-comment random hex token.
+  // Capture group 1 holds the bare ID, so we can add it directly without
+  // stripping comment markers. Built with /g (own instance — /g carries
+  // lastIndex, so it must never be shared) to walk every ID in one body.
+  const ID_RE = new RegExp(OCR_COMMENT_ID_SOURCE, "g");
   for (const c of comments) {
     const body = c.body || "";
     let m;
