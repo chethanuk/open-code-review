@@ -374,6 +374,17 @@ async function runPostReviewComments({
   // finding that is live.
   const resolveMode =
     resolveOutdated === "true" ? "resolve" : resolveOutdated === "report" ? "report" : "off";
+  // Unknown values fall to "off", which is the right default but an invisible
+  // one: a workflow that says 'True' or 'yes' would look configured and do
+  // nothing, and "silently does nothing" is the failure mode this feature can
+  // least afford. Empty/unset is the documented default, so it is not flagged.
+  if (resolveMode === "off" && resolveOutdated && resolveOutdated !== "false") {
+    const msg =
+      `[resolve-outdated] ignoring unrecognized resolve_outdated value ${JSON.stringify(resolveOutdated)}; ` +
+      `expected 'false', 'report', or 'true'. Resolving nothing.`;
+    if (core && typeof core.warning === "function") core.warning(msg);
+    else log(msg);
+  }
   if (resolveMode !== "off") {
     const currentSpans = comments.map((c) => ({
       path: c.path,

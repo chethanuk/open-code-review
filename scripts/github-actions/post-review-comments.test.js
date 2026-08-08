@@ -3586,11 +3586,24 @@ async function testResolveOutdatedOffByDefaultIssuesNoGraphql() {
   assert.strictEqual(base.outputs.comments_resolved, "0");
   assert.strictEqual(base.outputs.comments_resolved_preview, "0");
 
-  // Unrecognized values are off, not a crash and not an implicit 'true'.
-  for (const value of ["yes", "1", "TRUE", "", undefined]) {
+  // Unrecognized values are off, not a crash and not an implicit 'true'. A
+  // non-empty one is also WARNED about: falling back to off is correct but
+  // invisible, and a workflow that says 'TRUE' would otherwise look configured
+  // while doing nothing. Empty/unset/'false' are the documented ways to be off,
+  // so they must stay silent.
+  for (const { value, warns } of [
+    { value: "yes", warns: true },
+    { value: "1", warns: true },
+    { value: "TRUE", warns: true },
+    { value: "false", warns: false },
+    { value: "", warns: false },
+    { value: undefined, warns: false },
+  ]) {
     const r = await run({ result: TWO_FINDINGS, opts: { resolveOutdated: value }, githubOpts: { threads } });
     assert.strictEqual(r.github.graphqlCalls.length, 0, `resolve_outdated=${value} must be off`);
     assert.strictEqual(r.outputs.comments_resolved, "0", `resolve_outdated=${value}`);
+    const warned = r.core.warnings.filter((w) => w.includes("unrecognized resolve_outdated"));
+    assert.strictEqual(warned.length, warns ? 1 : 0, `resolve_outdated=${JSON.stringify(value)} warning`);
   }
 
   // Turning the feature on changes nothing about how findings are published.
