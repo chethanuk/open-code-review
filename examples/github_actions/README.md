@@ -190,6 +190,7 @@ The action posts a summary issue comment plus inline review comments. Two inputs
 | `config_changed` | the model, language, `llm_extra_body`, rules, routing inputs, or the resolved OCR version changed |
 | `not_ancestor` | the checkpoint is not an ancestor of the new head (force-push, rebase) |
 | `unknown_object` | the checkpoint commit is not in this clone, so ancestry could not be checked |
+| `rule_unreadable` | a `rule` path was given but could not be read, so no stored fingerprint can be trusted to mean "same rules" |
 | `resolver_error` | the comment could not be read, or `git merge-base --is-ancestor` could not run |
 
 Three outputs report what happened: `range_mode` (`checkpoint` or `full`), `range_summary` (the mode, the reason, and the range), and `checkpoint_after` (the head recorded as the new checkpoint, or empty when the run did not advance one).
