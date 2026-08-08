@@ -84,6 +84,11 @@ async function runPostReviewComments({
   // (fail-open for the policy itself, upholding I1).
   routeSeverityBelow = "",
   routeCategories = "",
+  // Outdated-thread resolution (#567). Opt-in, string-valued exactly like
+  // routeSeverityBelow: 'true' resolves, 'report' only logs what it would
+  // resolve, anything else (including the default) is a hard no-op that issues
+  // zero GraphQL calls.
+  resolveOutdated = "",
 }) {
   const log = (msg) => {
     if (core && typeof core.info === "function") core.info(msg);
@@ -112,6 +117,8 @@ async function runPostReviewComments({
     skipped: 0,
     failed: 0,
     routed: 0,
+    resolved: 0,
+    resolvedPreview: 0,
     summaryUrl: "",
   };
 
@@ -137,6 +144,13 @@ async function runPostReviewComments({
   stats.total = comments.length;
 
   // No comments: post a "looks good" summary.
+  //
+  // Outdated-thread resolution deliberately does NOT run here (nor at the
+  // parse-failure exit above). "The model reported nothing this run" is not
+  // evidence that previously-reported findings are gone — a truncated review, a
+  // model hiccup, or a diff the reviewer skipped all land on this exit, and any
+  // of them would otherwise close every open thread on the PR in one sweep.
+  // Resolution requires a run that actually produced findings.
   if (comments.length === 0) {
     const message = result.message || "No comments generated. Looks good to me.";
     const body = `${SUMMARY_MARKER}\n✅ **OpenCodeReview**: ${message}`;
@@ -347,6 +361,51 @@ async function runPostReviewComments({
     log,
   });
   if (finalized) stats.summaryUrl = finalized.url;
+
+  // ---- Resolve our own outdated threads (#567) ----
+  // Reachable only from here: both earlier exits (unparseable output, zero
+  // findings) return before this point on purpose. The gate is therefore
+  // positional and exact — "this run parsed >= 1 finding AND completed the
+  // posting loop". Findings that never went out as inline comments (suppressed
+  // by incremental dedupe, routed to the summary, or failed to post) still
+  // count towards the gate AND still veto resolution of a thread on their own
+  // lines, which is why currentSpans is built from the raw parsed findings
+  // rather than from `toSend`: a finding we chose not to repeat is still a
+  // finding that is live.
+  const resolveMode =
+    resolveOutdated === "true" ? "resolve" : resolveOutdated === "report" ? "report" : "off";
+  // Unknown values fall to "off", which is the right default but an invisible
+  // one: a workflow that says 'True' or 'yes' would look configured and do
+  // nothing, and "silently does nothing" is the failure mode this feature can
+  // least afford. Empty/unset is the documented default, so it is not flagged.
+  if (resolveMode === "off" && resolveOutdated && resolveOutdated !== "false") {
+    const msg =
+      `[resolve-outdated] ignoring unrecognized resolve_outdated value ${JSON.stringify(resolveOutdated)}; ` +
+      `expected 'false', 'report', or 'true'. Resolving nothing.`;
+    if (core && typeof core.warning === "function") core.warning(msg);
+    else log(msg);
+  }
+  if (resolveMode !== "off") {
+    const currentSpans = comments.map((c) => ({
+      path: c.path,
+      start_line: c.start_line,
+      line: c.end_line,
+    }));
+    const r = await resolveOutdatedThreads({
+      github,
+      owner,
+      repo,
+      prNumber,
+      core,
+      log,
+      botLogin: await getAuthenticatedLogin(github, log),
+      currentSpans,
+      overlapThreshold: incrementalOverlapThreshold,
+      dryRun: resolveMode === "report",
+    });
+    stats.resolved = r.resolved;
+    stats.resolvedPreview = resolveMode === "report" ? r.attempted : 0;
+  }
 
   setStatsOutputs(out, stats, batchCounters, batchSize);
 }
@@ -772,6 +831,11 @@ function setStatsOutputs(out, stats, batchCounters, batchSize) {
   out("comments_skipped", String(stats.skipped));
   out("comments_routed", String(stats.routed));
   out("comments_failed", String(stats.failed));
+  // Emitted on every exit (always "0" when resolve_outdated is off or in
+  // 'true' mode respectively) so a consumer workflow can read them
+  // unconditionally instead of testing for their existence.
+  out("comments_resolved", String(stats.resolved || 0));
+  out("comments_resolved_preview", String(stats.resolvedPreview || 0));
   out("summary_comment_url", stats.summaryUrl || "");
   // Per-batch telemetry (B7). These are additional outputs; the five above are
   // unchanged so existing consumers of comments_* / summary_comment_url are
@@ -1050,6 +1114,284 @@ function num(v) {
   return Number.isFinite(n) && n >= 1 ? n : null;
 }
 
+// The one description of OCR's inline-comment marker. Two call sites depend on
+// it — the retry idempotency check (getPostedCommentIds) and the resolve
+// ownership check (threadIsOurs) — and a drift between them would be silent in
+// both directions, so they are built from this single source. Anchored to the
+// HTML comment wrapper so user content or a quoted suggestion cannot forge it.
+const OCR_COMMENT_ID_SOURCE = String.raw`<!--\s*(ocr-\d+-\d+-[a-f0-9]+)\s*-->`;
+
+// ---- Outdated thread resolution (#567) ----
+//
+// Deterministic, zero-LLM cleanup of the bot's OWN stale inline threads. The
+// "is this finding still relevant?" judgement is never ours: GitHub computes
+// `isOutdated` server-side (the thread's original lines no longer exist in the
+// current diff) and we only ever act on threads it has already marked that way.
+// Everything else in the predicate is a veto — a human reply, an already
+// resolved thread, or a finding from THIS run still sitting on the same lines
+// all keep the thread open.
+
+const REVIEW_THREADS_QUERY = `
+query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          path
+          isOutdated
+          isResolved
+          originalLine
+          originalStartLine
+          comments(first: 100) { totalCount nodes { author { login __typename } } }
+          # Aliased second selection so only the ROOT comment's body crosses the
+          # wire: ownership is proved by the marker OCR stamps on the comment it
+          # created, and replies cannot carry that proof. Fetching every body
+          # would multiply the payload for a field only nodes[0] is read from.
+          root: comments(first: 1) { nodes { body } }
+        }
+      }
+    }
+  }
+}`;
+
+const RESOLVE_THREAD_MUTATION = `
+mutation($threadId: ID!) {
+  resolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } }
+}`;
+
+// Hard cap on resolve mutations per run. Resolution is cleanup, not the job:
+// a PR that somehow accumulated hundreds of outdated bot threads should trickle
+// down over several runs rather than burn a run's whole GraphQL budget (and
+// trip secondary rate limits) in one burst.
+const MAX_RESOLVE_PER_RUN = 50;
+
+// List every review thread on the PR, paginated. Read-only and fail-open:
+// any GraphQL error degrades to "no threads", which makes the whole feature a
+// no-op rather than failing the run over a cleanup step.
+async function listBotReviewThreads({ github, owner, repo, prNumber, log, warn }) {
+  const all = [];
+  let cursor = null;
+  const MAX_PAGES = 10; // 1000 threads; far past any realistic PR.
+  try {
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const res = await github.graphql(REVIEW_THREADS_QUERY, {
+        owner,
+        repo,
+        number: prNumber,
+        cursor,
+      });
+      const threads =
+        res && res.repository && res.repository.pullRequest
+          ? res.repository.pullRequest.reviewThreads
+          : null;
+      if (!threads) break;
+      for (const node of threads.nodes || []) {
+        if (node) all.push(node);
+      }
+      if (!threads.pageInfo || !threads.pageInfo.hasNextPage) break;
+      cursor = threads.pageInfo.endCursor;
+    }
+  } catch (e) {
+    const msg = `[resolve-outdated] listing review threads failed (${e.message}); resolving nothing.`;
+    if (warn) warn(msg);
+    else log(msg);
+    return [];
+  }
+  return all;
+}
+
+// Does this thread's ROOT comment carry a marker OCR wrote? Only the root is
+// consulted: OCR creates a thread and never replies into one, so a marker
+// appearing deeper would mean someone quoted our comment back at us, which is
+// evidence of a human conversation rather than of ownership. A thread whose
+// root body did not come back (older data, a truncated response) is not
+// demonstrably ours and returns false — the fail-closed direction, since the
+// cost is a stale thread left open rather than someone else's thread resolved.
+function threadIsOurs(thread) {
+  const root = thread && thread.root && thread.root.nodes && thread.root.nodes[0];
+  const body = (root && root.body) || "";
+  return new RegExp(OCR_COMMENT_ID_SOURCE).test(body);
+}
+
+// GraphQL's reviewThreads returns a bot's SLUG ("github-actions") where REST —
+// and therefore getAuthenticatedLogin() and isBotComment() — uses the suffixed
+// form ("github-actions[bot]"). Measured on a live PR: the same comment reads
+// `github-actions` with __typename "Bot" through GraphQL and
+// `github-actions[bot]` through REST. Comparing the raw GraphQL login against a
+// REST-shaped botLogin would make every one of our own threads look like a
+// human reply, so the feature would resolve nothing and look merely inert.
+// Normalizing here keeps isBotComment's REST contract untouched for incremental
+// mode, which is its other caller.
+function graphqlAuthorLogin(author) {
+  if (!author || !author.login) return "";
+  const login = String(author.login);
+  return author.__typename === "Bot" && !/\[bot\]$/i.test(login) ? `${login}[bot]` : login;
+}
+
+// Pure predicate: may this thread be resolved, and if not, why not?
+// Returns "resolve" | "not_outdated" | "already_resolved" | "unverified" |
+// "not_ours" | "human_reply" | "overlap".
+//
+// Deliberately does NOT consult `viewerCanResolve`: it reports false for tokens
+// that can in fact resolve the thread, so gating on it would silently disable
+// the feature. The mutation is attempted and its failure is caught instead.
+function shouldResolveThread(thread, { botLogin, currentSpans = [], overlapThreshold } = {}) {
+  if (!thread || thread.isOutdated !== true) return "not_outdated";
+  if (thread.isResolved === true) return "already_resolved";
+  // Any participant we cannot positively identify as the bot counts as a human
+  // (an unknown/ghost author is treated as human on purpose — the failure mode
+  // of leaving a thread open is strictly cheaper than closing someone's reply).
+  const nodes = (thread.comments && thread.comments.nodes) || [];
+  // "No comment is a human's" is only evidence when we can see every comment.
+  // A thread with nothing visible is not demonstrably ours, and one with more
+  // comments than the query returned could carry a human reply we never saw —
+  // both stay open rather than being resolved on a partial view.
+  const total = thread.comments && thread.comments.totalCount;
+  if (nodes.length === 0 || (typeof total === "number" && total > nodes.length)) return "unverified";
+  // Authorship alone cannot establish that WE created this thread. Every
+  // workflow in a repo that uses the default GITHUB_TOKEN posts as the same
+  // identity, so a sibling workflow's outdated review threads are
+  // indistinguishable from ours by author; and under a GitHub App token the
+  // `github-actions[bot]` fallback in isBotComment would accept those threads
+  // outright. The marker OCR stamps into every inline comment it creates
+  // (newCommentId, via formatComment) is the actual proof of authorship, so it
+  // is what the destructive path gates on. Checked before the human-reply loop
+  // because "not ours" is the more fundamental answer: a thread we did not
+  // create is not ours to classify, let alone resolve.
+  if (!threadIsOurs(thread)) return "not_ours";
+  for (const c of nodes) {
+    const login = graphqlAuthorLogin(c && c.author);
+    if (!isBotComment({ user: { login } }, botLogin)) return "human_reply";
+  }
+  // A thread whose ORIGINAL lines are still covered by a finding from this run
+  // is the rebase case: GitHub calls it outdated because the diff moved, but the
+  // model just re-reported the same problem. Leave it open. Reuses the exact
+  // incremental same-comment test (lineSpan + sameCommentSpan + resolveThreshold
+  // via overlapsHistory) so the two features can never disagree about identity.
+  const span = { path: thread.path, start_line: thread.originalStartLine, line: thread.originalLine };
+  // No usable original line means overlapsHistory can only ever answer "no
+  // overlap", so the veto below is unreachable for this thread — and that veto
+  // is the whole mitigation for GitHub reporting a still-live finding's thread
+  // as outdated after a force-push. Resolving on a check that cannot fail is
+  // worse than leaving the thread open, so treat it exactly like a partial
+  // comment view.
+  if (!lineSpan(span)) return "unverified";
+  if (overlapsHistory(span, currentSpans, overlapThreshold)) return "overlap";
+  return "resolve";
+}
+
+// Classify a resolve-mutation failure. Both "forbidden" and "throttled" mean
+// "stop trying for this run" — the first because every later mutation will fail
+// identically, the second because hammering a throttled endpoint deepens the
+// incident. Throttling is checked first: GitHub reports secondary rate limits
+// as 403, which would otherwise read as a permission problem.
+function classifyResolveError(e) {
+  if (!e) return "other";
+  const types = [];
+  const msgs = [e.message];
+  if (e.type) types.push(String(e.type));
+  // Octokit surfaces GraphQL errors either directly on the error (`.errors`) or
+  // under the parsed response (`.response.errors`); check both shapes.
+  for (const list of [e.errors, e.response && e.response.errors]) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (item && item.type) types.push(String(item.type));
+      if (item && item.message) msgs.push(String(item.message));
+    }
+  }
+  const text = msgs.filter(Boolean).join(" ");
+  if (/rate limit|abuse|secondary/i.test(text) || e.status === 429) return "throttled";
+  if (
+    types.some((t) => /^(FORBIDDEN|UNAUTHORIZED|INSUFFICIENT_SCOPES)$/i.test(t)) ||
+    /not accessible by integration|resource not accessible|forbidden|permission/i.test(text) ||
+    e.status === 403
+  ) {
+    return "forbidden";
+  }
+  return "other";
+}
+
+// Resolve this run's stale threads, sequentially and capped. Never throws:
+// every failure path degrades to "resolved fewer threads than we could have".
+// Returns { candidates, attempted, resolved, failed, reasons }.
+async function resolveOutdatedThreads({
+  github,
+  owner,
+  repo,
+  prNumber,
+  core,
+  log,
+  botLogin,
+  currentSpans = [],
+  overlapThreshold,
+  dryRun = false,
+}) {
+  const warn = (msg) => {
+    if (core && typeof core.warning === "function") core.warning(msg);
+    else log(msg);
+  };
+  const threads = await listBotReviewThreads({ github, owner, repo, prNumber, log, warn });
+
+  const reasons = {};
+  const candidates = [];
+  for (const thread of threads) {
+    const reason = shouldResolveThread(thread, { botLogin, currentSpans, overlapThreshold });
+    reasons[reason] = (reasons[reason] || 0) + 1;
+    if (reason === "resolve") candidates.push(thread);
+  }
+  const attempted = candidates.slice(0, MAX_RESOLVE_PER_RUN);
+
+  let resolved = 0;
+  let failed = 0;
+  if (!dryRun) {
+    // Sequential on purpose: a burst of parallel mutations is exactly what
+    // trips GitHub's secondary rate limiter on a write endpoint.
+    const delay = parseNonNegInt(process.env.OCR_RESOLVE_DELAY, 1000);
+    for (let i = 0; i < attempted.length; i++) {
+      try {
+        await github.graphql(RESOLVE_THREAD_MUTATION, { threadId: attempted[i].id });
+        resolved++;
+      } catch (e) {
+        const kind = classifyResolveError(e);
+        if (kind === "forbidden") {
+          warn(
+            `[resolve-outdated] cannot resolve review threads with this token (${e.message}). ` +
+              `resolve_outdated: 'true' needs the calling workflow to grant \`contents: write\` in its permissions block. ` +
+              `Resolved ${resolved} of ${attempted.length} thread(s); skipping the rest.`
+          );
+          break;
+        }
+        if (kind === "throttled") {
+          warn(
+            `[resolve-outdated] rate limited while resolving threads (${e.message}); ` +
+              `resolved ${resolved} of ${attempted.length} thread(s); skipping the rest this run.`
+          );
+          break;
+        }
+        failed++;
+        warn(`[resolve-outdated] failed to resolve thread ${attempted[i].id}: ${e.message}`);
+      }
+      if (delay > 0 && i < attempted.length - 1) await sleep(delay);
+    }
+  }
+
+  const skipped =
+    Object.keys(reasons)
+      .filter((k) => k !== "resolve")
+      .sort()
+      .map((k) => `${k}:${reasons[k]}`)
+      .join(",") || "none";
+  log(
+    `[resolve-outdated] mode=${dryRun ? "report" : "resolve"} threads=${threads.length} ` +
+      `candidates=${candidates.length} attempted=${attempted.length} resolved=${resolved} ` +
+      `failed=${failed} skipped=${skipped}`
+  );
+
+  return { candidates: candidates.length, attempted: attempted.length, resolved, failed, reasons };
+}
+
 // ---- Rate-limit / retry helpers (ported verbatim) ----
 
 function sleep(ms) {
@@ -1286,13 +1628,12 @@ async function getPostedCommentIds({ github, owner, repo, prNumber, log }) {
     github.rest.pulls.listReviewComments({ owner, repo, pull_number: prNumber, per_page, page }), log
   );
   const ids = new Set();
-  // Anchor the regex to the HTML comment wrapper (<!-- ocr-... -->) so
-  // user-generated content or code suggestions cannot trigger false positives
-  // in the idempotency check. The ID format is `ocr-<RUN_TAG>-<random>` where
-  // RUN_TAG is `<runId>-<runAttempt>` and <random> is a per-comment random
-  // hex token. Capture group 1 holds the bare ID, so we can add it directly
-  // without stripping comment markers.
-  const ID_RE = /<!--\s*(ocr-\d+-\d+-[a-f0-9]+)\s*-->/g;
+  // The ID format is `ocr-<RUN_TAG>-<random>` where RUN_TAG is
+  // `<runId>-<runAttempt>` and <random> is a per-comment random hex token.
+  // Capture group 1 holds the bare ID, so we can add it directly without
+  // stripping comment markers. Built with /g (own instance — /g carries
+  // lastIndex, so it must never be shared) to walk every ID in one body.
+  const ID_RE = new RegExp(OCR_COMMENT_ID_SOURCE, "g");
   for (const c of comments) {
     const body = c.body || "";
     let m;
@@ -2115,4 +2456,9 @@ module.exports = {
   isLineResolutionFailure,
   cooldownAndReconcile,
   getPrDiffHunks,
+  listBotReviewThreads,
+  shouldResolveThread,
+  resolveOutdatedThreads,
+  classifyResolveError,
+  MAX_RESOLVE_PER_RUN,
 };
