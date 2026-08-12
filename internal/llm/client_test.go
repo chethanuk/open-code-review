@@ -227,6 +227,45 @@ func TestBuildAnthropicParams_CacheControl_NoSystem(t *testing.T) {
 	}
 }
 
+func TestBuildAnthropicParams_DisableCacheControl(t *testing.T) {
+	// DisableCacheControl=true must result in no cache_control on any system block or tool.
+	client := NewAnthropicClient(ClientConfig{
+		URL:                 "https://api.anthropic.com",
+		DisableCacheControl: true,
+	})
+
+	req := ChatRequest{
+		Messages: []Message{
+			{Role: "system", Content: "You are a code reviewer."},
+			{Role: "system", Content: "Be concise."},
+			{Role: "user", Content: "Review this code."},
+		},
+		Tools: []ToolDef{
+			{Type: "function", Function: FunctionDef{Name: "tool_a", Description: "first tool", Parameters: map[string]any{"type": "object"}}},
+			{Type: "function", Function: FunctionDef{Name: "tool_b", Description: "second tool", Parameters: map[string]any{"type": "object"}}},
+		},
+	}
+
+	params, err := client.buildAnthropicParams("claude-sonnet-4-20250514", req)
+	if err != nil {
+		t.Fatalf("buildAnthropicParams: %v", err)
+	}
+
+	for i, sys := range params.System {
+		if sys.CacheControl.Type != "" {
+			t.Errorf("system block %d: CacheControl.Type = %q, want empty (disable_cache_control=true)", i, sys.CacheControl.Type)
+		}
+	}
+	for i, tool := range params.Tools {
+		if tool.OfTool == nil {
+			continue
+		}
+		if tool.OfTool.CacheControl.Type != "" {
+			t.Errorf("tool %d: CacheControl.Type = %q, want empty (disable_cache_control=true)", i, tool.OfTool.CacheControl.Type)
+		}
+	}
+}
+
 func TestBuildAnthropicParams_NullToolCallArguments(t *testing.T) {
 	// "arguments": null (as emitted by some OpenAI-compatible gateways)
 	// unmarshals a pre-initialized map back to nil; the Anthropic API

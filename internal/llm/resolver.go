@@ -17,15 +17,16 @@ import (
 
 // ResolvedEndpoint holds the resolved LLM endpoint configuration.
 type ResolvedEndpoint struct {
-	URL          string
-	Token        string
-	Model        string
-	Provider     string
-	Protocol     string            // canonical protocol name (see protocol.go); resolver normalizes aliases
-	AuthHeader   string            // Anthropic auth header: "x-api-key" or "authorization"
-	Source       string            // human-readable config source label
-	ExtraBody    map[string]any    // vendor-specific request body fields
-	ExtraHeaders map[string]string // extra HTTP headers for the LLM request
+	URL                 string
+	Token               string
+	Model               string
+	Provider            string
+	Protocol            string            // canonical protocol name (see protocol.go); resolver normalizes aliases
+	AuthHeader          string            // Anthropic auth header: "x-api-key" or "authorization"
+	Source              string            // human-readable config source label
+	ExtraBody           map[string]any    // vendor-specific request body fields
+	ExtraHeaders        map[string]string // extra HTTP headers for the LLM request
+	DisableCacheControl bool              // when true, omit cache_control from Anthropic requests (use for proxies/gateways that reject the field)
 	// Timeout is the per-request HTTP timeout; 0 means use the client default (5 min).
 	// Only config file (llm/provider sections) and OCR_LLM_TIMEOUT env var can set this.
 	// tryCCEnv and tryShellRC always leave it at 0 since those sources have no timeout
@@ -235,28 +236,30 @@ func tryOCREnv(modelOverride string) (ResolvedEndpoint, bool, error) {
 
 // llmFileConfig represents the llm section in config.json.
 type llmFileConfig struct {
-	URL          string            `json:"url,omitempty"`
-	AuthToken    string            `json:"auth_token,omitempty"`
-	AuthHeader   string            `json:"auth_header,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	Protocol     string            `json:"protocol,omitempty"`      // anthropic|openai|openai-responses; takes priority over use_anthropic
-	UseAnthropic *bool             `json:"use_anthropic,omitempty"` // pointer to distinguish unset from false; legacy fallback when protocol is empty
-	TimeoutSec   int               `json:"timeout_sec,omitempty"`   // per-request HTTP timeout in seconds
-	ExtraBody    map[string]any    `json:"extra_body,omitempty"`
-	ExtraHeaders map[string]string `json:"extra_headers,omitempty"`
+	URL                 string            `json:"url,omitempty"`
+	AuthToken           string            `json:"auth_token,omitempty"`
+	AuthHeader          string            `json:"auth_header,omitempty"`
+	Model               string            `json:"model,omitempty"`
+	Protocol            string            `json:"protocol,omitempty"`      // anthropic|openai|openai-responses; takes priority over use_anthropic
+	UseAnthropic        *bool             `json:"use_anthropic,omitempty"` // pointer to distinguish unset from false; legacy fallback when protocol is empty
+	TimeoutSec          int               `json:"timeout_sec,omitempty"`   // per-request HTTP timeout in seconds
+	DisableCacheControl bool              `json:"disable_cache_control,omitempty"` // omit cache_control from Anthropic requests
+	ExtraBody           map[string]any    `json:"extra_body,omitempty"`
+	ExtraHeaders        map[string]string `json:"extra_headers,omitempty"`
 }
 
 // providerEntryConfig represents a single provider entry in config.json.
 type providerEntryConfig struct {
-	APIKey       string            `json:"api_key,omitempty"`
-	URL          string            `json:"url,omitempty"`
-	Protocol     string            `json:"protocol,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	Models       []string          `json:"models,omitempty"`
-	AuthHeader   string            `json:"auth_header,omitempty"`
-	TimeoutSec   int               `json:"timeout_sec,omitempty"` // per-request HTTP timeout in seconds
-	ExtraBody    map[string]any    `json:"extra_body,omitempty"`
-	ExtraHeaders map[string]string `json:"extra_headers,omitempty"`
+	APIKey              string            `json:"api_key,omitempty"`
+	URL                 string            `json:"url,omitempty"`
+	Protocol            string            `json:"protocol,omitempty"`
+	Model               string            `json:"model,omitempty"`
+	Models              []string          `json:"models,omitempty"`
+	AuthHeader          string            `json:"auth_header,omitempty"`
+	TimeoutSec          int               `json:"timeout_sec,omitempty"` // per-request HTTP timeout in seconds
+	DisableCacheControl bool              `json:"disable_cache_control,omitempty"` // omit cache_control from Anthropic requests
+	ExtraBody           map[string]any    `json:"extra_body,omitempty"`
+	ExtraHeaders        map[string]string `json:"extra_headers,omitempty"`
 }
 
 type configFile struct {
@@ -423,16 +426,17 @@ func tryProviderConfig(cfg configFile, modelOverride string) (ResolvedEndpoint, 
 	}
 
 	return ResolvedEndpoint{
-		URL:          url,
-		Token:        apiKey,
-		Model:        model,
-		Provider:     cfg.Provider,
-		Protocol:     protocol,
-		AuthHeader:   authHeader,
-		Source:       "provider:" + cfg.Provider,
-		ExtraBody:    extraBody,
-		ExtraHeaders: extraHeaders,
-		Timeout:      timeout,
+		URL:                 url,
+		Token:               apiKey,
+		Model:               model,
+		Provider:            cfg.Provider,
+		Protocol:            protocol,
+		AuthHeader:          authHeader,
+		Source:              "provider:" + cfg.Provider,
+		ExtraBody:           extraBody,
+		ExtraHeaders:        extraHeaders,
+		DisableCacheControl: entry.DisableCacheControl,
+		Timeout:             timeout,
 	}, true, nil
 }
 
@@ -483,7 +487,7 @@ func tryLegacyLlmConfig(cfg configFile, modelOverride string) (ResolvedEndpoint,
 		return ResolvedEndpoint{}, false, fmt.Errorf("OCR config file: %w", err)
 	}
 
-	return ResolvedEndpoint{URL: cfg.Llm.URL, Token: cfg.Llm.AuthToken, Model: model, Protocol: protocol, AuthHeader: authHeader, Source: "OCR config file", ExtraBody: cfg.Llm.ExtraBody, ExtraHeaders: cfg.Llm.ExtraHeaders, Timeout: timeout}, true, nil
+	return ResolvedEndpoint{URL: cfg.Llm.URL, Token: cfg.Llm.AuthToken, Model: model, Protocol: protocol, AuthHeader: authHeader, Source: "OCR config file", ExtraBody: cfg.Llm.ExtraBody, ExtraHeaders: cfg.Llm.ExtraHeaders, DisableCacheControl: cfg.Llm.DisableCacheControl, Timeout: timeout}, true, nil
 }
 
 // tryCCEnv reads Claude Code environment variables.
