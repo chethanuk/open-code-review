@@ -167,6 +167,36 @@ without patching the source:
 ocr config set providers.anthropic.extra_body '{"thinking":{"type":"disabled"}}'
 ```
 
+### Disable prompt-caching headers
+
+Some Anthropic-compatible gateways or proxies reject the `cache_control`
+field that OCR adds to system prompts and tool definitions to enable
+[prompt caching](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching).
+If you see an error like `unrecognizedProperty=cache_control` you can turn
+the field off:
+
+```bash
+# For a named provider
+ocr config set providers.anthropic.disable_cache_control true
+
+# For a custom provider
+ocr config set custom_providers.<name>.disable_cache_control true
+```
+
+Or edit `~/.opencodereview/config.json` directly:
+
+```json
+{
+  "providers": {
+    "anthropic": { "disable_cache_control": true }
+  }
+}
+```
+
+Setting `disable_cache_control` to `true` has no effect on non-Anthropic
+providers (OpenAI, OpenAI-Responses). Prompt-caching cost savings are lost
+when the field is disabled, but review correctness is unaffected.
+
 ## Configuring the review language
 
 `language` determines which language review comments are written in;
