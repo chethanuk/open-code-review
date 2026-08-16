@@ -3,15 +3,7 @@
 
 package main
 
-import (
-	"context"
-
-	"github.com/spf13/cobra"
-)
-
-func executeReview(opts reviewOptions) error {
-	return executeReviewContext(context.Background(), opts)
-}
+import "github.com/spf13/cobra"
 
 // parseReviewFlags provides test compatibility: parses args through a fresh
 // cobra command instance and returns the resulting reviewOptions.

@@ -109,6 +109,15 @@ func validateReviewOptions(opts *reviewOptions) error {
 	if opts.preview && opts.resume != "" {
 		return fmt.Errorf("--preview and --resume cannot be used together")
 	}
+	if opts.preview && opts.resumeIncremental {
+		return fmt.Errorf("--preview and --resume-incremental cannot be used together")
+	}
+	if opts.resumeIncremental && opts.resume == "" {
+		return fmt.Errorf("--resume-incremental requires --resume <session-id>")
+	}
+	if opts.resumeIncremental && (opts.from == "" || opts.to == "") {
+		return fmt.Errorf("--resume-incremental is only supported in range mode (--from and --to)")
+	}
 	if err := validateAudience(opts.audience); err != nil {
 		return err
 	}
@@ -172,6 +181,7 @@ func registerReviewFlags(cmd *cobra.Command, opts *reviewOptions) {
 	addDiffFlags(cmd, &opts.from, &opts.to, &opts.commit)
 	cmd.Flags().StringVar(&opts.resume, "resume", "", "resume from a previous review session id")
 	cmd.RegisterFlagCompletionFunc("resume", completeSessionIDs)
+	cmd.Flags().BoolVar(&opts.resumeIncremental, "resume-incremental", false, "allow resuming range mode when the head commit has moved (reuses unchanged file reviews)")
 	addExcludeFlag(cmd, &opts.excludes)
 	addOutputFlags(cmd, &opts.outputFormat, &opts.audience)
 	addConcurrencyFlags(cmd, &opts.concurrency, &opts.perFileTimeout, &opts.maxTools, &opts.maxGitProcs, &opts.maxTokens, &opts.maxTokensBudget)

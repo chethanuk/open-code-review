@@ -76,6 +76,62 @@ func TestValidateResume(t *testing.T) {
 			name: "identical input, provider and model is accepted",
 		},
 		{
+			name: "incremental resume with moved head and same base is accepted when Incremental is true",
+			req: func(r *ResumeRequest) {
+				r.Incremental = true
+				r.ResolvedBase = "base-commit-123"
+				r.PerFileMaxTokens = 1000
+				r.Identity.SourceArtifactSHA256 = "artifact-child-moved-head"
+			},
+			parent: func(m *RunManifest) {
+				m.Input.ResolvedBase = "base-commit-123"
+				m.Execution.PerFileMaxTokens = 1000
+			},
+			state: func(s *ResumeState) {
+				s.Manifest.Execution.PerFileMaxTokens = 1000
+			},
+		},
+		{
+			name: "incremental resume with moved head rejected when base differs",
+			req: func(r *ResumeRequest) {
+				r.Incremental = true
+				r.ResolvedBase = "base-commit-different"
+				r.PerFileMaxTokens = 1000
+				r.Identity.SourceArtifactSHA256 = "artifact-child-moved-head"
+			},
+			parent: func(m *RunManifest) {
+				m.Input.ResolvedBase = "base-commit-123"
+				m.Execution.PerFileMaxTokens = 1000
+			},
+			wantErr: "the reviewed input base commit changed",
+		},
+		{
+			name: "incremental resume with moved head rejected when per-file max tokens differs",
+			req: func(r *ResumeRequest) {
+				r.Incremental = true
+				r.ResolvedBase = "base-commit-123"
+				r.PerFileMaxTokens = 2000
+				r.Identity.SourceArtifactSHA256 = "artifact-child-moved-head"
+			},
+			parent: func(m *RunManifest) {
+				m.Input.ResolvedBase = "base-commit-123"
+				m.Execution.PerFileMaxTokens = 1000
+			},
+			wantErr: "per-file max token ceiling changed",
+		},
+		{
+			name: "incremental resume with moved head rejected when Incremental is false",
+			req: func(r *ResumeRequest) {
+				r.Incremental = false
+				r.ResolvedBase = "base-commit-123"
+				r.Identity.SourceArtifactSHA256 = "artifact-child-moved-head"
+			},
+			parent: func(m *RunManifest) {
+				m.Input.ResolvedBase = "base-commit-123"
+			},
+			wantErr: "the reviewed input changed",
+		},
+		{
 			name: "parent that completed nothing is still resumable",
 			// The parent's own coverage is irrelevant here: admission depends on
 			// whether the input is verifiable, not on how much work got done. A

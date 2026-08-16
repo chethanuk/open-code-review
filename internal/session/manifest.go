@@ -265,6 +265,7 @@ type ManifestExecution struct {
 	ConfiguredConcurrency int    `json:"configured_concurrency,omitempty"`
 	RuleConfigSHA256      string `json:"rule_config_sha256,omitempty"`
 	RuntimeConfigSHA256   string `json:"runtime_config_sha256,omitempty"`
+	PerFileMaxTokens      int    `json:"per_file_max_tokens,omitempty"`
 }
 
 // RunManifest is the immutable, versioned coverage snapshot of a single run.

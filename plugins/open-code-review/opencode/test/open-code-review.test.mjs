@@ -2,7 +2,7 @@
 // Copyright 2026 alibaba/open-code-review Contributors
 
 import assert from "node:assert/strict"
-import { access, chmod, copyFile, link, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
 import test from "node:test"
@@ -26,35 +26,15 @@ async function withTemporaryDirectory(callback) {
   try {
     return await callback(directory)
   } finally {
-    await rm(directory, {
-      recursive: true,
-      force: true,
-      maxRetries: 20,
-      retryDelay: 50,
-    })
+    await rm(directory, { recursive: true, force: true })
   }
 }
 
 async function withFakeOcr(source, callback) {
   return await withTemporaryDirectory(async (directory) => {
-    if (process.platform === "win32") {
-      const executable = join(directory, "ocr.exe")
-      try {
-        await link(process.execPath, executable)
-      } catch {
-        await copyFile(process.execPath, executable)
-      }
-      for (const command of ["review", "version", "llm"]) {
-        await writeFile(
-          join(directory, command),
-          `process.argv.splice(2, 0, ${JSON.stringify(command)})\n${source}\n`,
-        )
-      }
-    } else {
-      const executable = join(directory, "ocr")
-      await writeFile(executable, `#!/usr/bin/env node\n${source}\n`)
-      await chmod(executable, 0o755)
-    }
+    const executable = join(directory, "ocr")
+    await writeFile(executable, `#!/usr/bin/env node\n${source}\n`)
+    await chmod(executable, 0o755)
 
     const previousPath = process.env.PATH
     process.env.PATH = `${directory}${delimiter}${previousPath ?? ""}`
@@ -108,17 +88,10 @@ async function waitForProcessExit(pid, timeoutMs = 5_000) {
 
 async function withShortOverallTimeout(timeoutMs, callback) {
   const originalSetTimeout = globalThis.setTimeout
-  const overallTimeouts = []
-  globalThis.setTimeout = (handler, delay, ...args) => {
-    if (delay >= 60 * 1000) {
-      overallTimeouts.push(delay)
-      return originalSetTimeout(handler, timeoutMs, ...args)
-    }
-    return originalSetTimeout(handler, delay, ...args)
-  }
+  globalThis.setTimeout = (handler, delay, ...args) =>
+    originalSetTimeout(handler, delay === 15 * 60 * 1000 ? timeoutMs : delay, ...args)
   try {
-    await callback()
-    return overallTimeouts
+    return await callback()
   } finally {
     globalThis.setTimeout = originalSetTimeout
   }
@@ -175,7 +148,7 @@ test("ocr_review creates agent-friendly workspace arguments", async () => {
     async (worktree) => {
       const { hooks } = await loadPlugin(worktree)
       const output = await hooks.tool.ocr_review.execute(
-        { background: "Add rate limiting", timeoutMinutes: 30 },
+        { background: "Add rate limiting" },
         toolContext(worktree),
       )
       assert.deepEqual(JSON.parse(output).argv, [
@@ -188,8 +161,6 @@ test("ocr_review creates agent-friendly workspace arguments", async () => {
         worktree,
         "--background",
         "Add rate limiting",
-        "--timeout",
-        "30",
       ])
     },
   )
@@ -406,44 +377,17 @@ test("ocr_review kills the whole process group on cancellation", { skip: process
   )
 })
 
-test("ocr_review defaults to 30-minute overall timeout", async () => {
-  await withFakeOcr(
-    "console.log('{\"status\":\"success\",\"findings\":[]}')",
-    async (worktree) => {
-      const { hooks } = await loadPlugin(worktree)
-      const originalSetTimeout = globalThis.setTimeout
-      const overallTimeouts = []
-      globalThis.setTimeout = (handler, delay, ...args) => {
-        if (delay >= 60 * 1000) {
-          overallTimeouts.push(delay)
-        }
-        return originalSetTimeout(handler, delay, ...args)
-      }
-      try {
-        await hooks.tool.ocr_review.execute({}, toolContext(worktree))
-      } finally {
-        globalThis.setTimeout = originalSetTimeout
-      }
-      assert.deepEqual(overallTimeouts, [30 * 60 * 1000])
-    },
-  )
-})
-
-test("ocr_review keeps per-file and overall timeouts independent", async () => {
+test("ocr_review terminates after its overall timeout", async () => {
   await withFakeOcr(
     "setInterval(() => {}, 1000)",
     async (worktree) => {
       const { hooks } = await loadPlugin(worktree)
-      const overallTimeouts = await withShortOverallTimeout(20, async () => {
+      await withShortOverallTimeout(20, async () => {
         await assert.rejects(
-          hooks.tool.ocr_review.execute(
-            { timeoutMinutes: 30, overallTimeoutMinutes: 45 },
-            toolContext(worktree),
-          ),
-          /timed out after 2700 seconds/,
+          hooks.tool.ocr_review.execute({}, toolContext(worktree)),
+          /timed out after 900 seconds/,
         )
       })
-      assert.deepEqual(overallTimeouts, [45 * 60 * 1000])
     },
   )
 })
