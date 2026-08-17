@@ -25,10 +25,20 @@ const hintFile = path.join(os.homedir(), ".opencodereview", "update-available");
 try {
   const hint = JSON.parse(fs.readFileSync(hintFile, "utf8"));
   if (hint.version && hint.pkg) {
-    console.error(
-      `\x1b[33m[ocr] A new version (v${hint.version}) is available. Run to update:\x1b[0m\n` +
-      `\x1b[33m  npm i -g ${hint.pkg}@${hint.version}\x1b[0m\n`
-    );
+    // Normalize both sides: strip leading 'v' so "v1.8.6" == "1.8.6".
+    const pkgVersion = (() => {
+      try {
+        return require(path.join(__dirname, "..", "package.json")).version || "";
+      } catch (_) { return ""; }
+    })();
+    const hintNorm = hint.version.startsWith("v") ? hint.version.slice(1) : hint.version;
+    const pkgNorm  = pkgVersion.startsWith("v")  ? pkgVersion.slice(1)  : pkgVersion;
+    if (!pkgNorm || hintNorm !== pkgNorm) {
+      console.error(
+        `\x1b[33m[ocr] A new version (v${hint.version}) is available. Run to update:\x1b[0m\n` +
+        `\x1b[33m  npm i -g ${hint.pkg}@${hint.version}\x1b[0m\n`
+      );
+    }
   }
 } catch (_) {}
 

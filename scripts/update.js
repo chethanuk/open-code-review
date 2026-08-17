@@ -153,8 +153,11 @@ async function main() {
     if (!installedVersion) return;
 
     const pkg = loadPackageJson();
-    const latestVersion = await fetchLatestVersion(pkg);
-    if (!latestVersion) return;
+    const rawLatest = await fetchLatestVersion(pkg);
+    if (!rawLatest) return;
+
+    // Normalize: strip leading 'v' so "v1.8.6" and "1.8.6" are treated equally.
+    const latestVersion = rawLatest.startsWith("v") ? rawLatest.slice(1) : rawLatest;
 
     if (!SEMVER_RE.test(latestVersion)) return;
 
