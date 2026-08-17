@@ -111,6 +111,7 @@ func (a *Agent) runIdentity() session.RunIdentity {
 		Mode:                 a.manifestMode(),
 		SourceArtifactSHA256: a.sourceArtifactSHA256(),
 		RuleConfigSHA256:     a.ruleConfigSHA256(),
+		PerFileMaxTokens:     a.args.Template.MaxTokens,
 	}
 	if raw := a.repoRemoteIdentity; raw != "" {
 		sum := sha256.Sum256([]byte(raw))

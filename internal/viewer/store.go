@@ -432,8 +432,6 @@ func LoadSession(root, encodedRepo, sessionID string) (*ViewSession, error) {
 							info := ToolCallInfo{Name: name, Arguments: args}
 							if name == "task_done" {
 								info.Ok = taskDoneSucceeded(args)
-							} else if name == "report_incorrect_comments" || name == "approve_all_comments" {
-								info.Ok = true
 							}
 							card.ToolCalls = append(card.ToolCalls, info)
 						}

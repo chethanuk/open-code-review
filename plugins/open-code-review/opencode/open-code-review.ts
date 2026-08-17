@@ -14,7 +14,6 @@ interface ReviewInput {
   model?: string
   concurrency?: number
   timeoutMinutes?: number
-  overallTimeoutMinutes?: number
   maxTools?: number
   maxGitProcesses?: number
   preview?: boolean
@@ -27,7 +26,7 @@ interface OcrInvocation {
 
 interface RunOptions {
   cwd: string
-  timeoutMs?: number | null
+  timeoutMs?: number
   maxOutputBytes?: number
   invocation?: OcrInvocation
   signal?: AbortSignal
@@ -118,7 +117,7 @@ function appendChunk(
 
 async function runOcr(args: string[], options: RunOptions): Promise<RunResult> {
   const invocation = options.invocation ?? { command: "ocr", prefixArgs: [] }
-  const timeoutMs = options.timeoutMs === undefined ? 15 * 60 * 1000 : options.timeoutMs
+  const timeoutMs = options.timeoutMs ?? 15 * 60 * 1000
   const maxOutputBytes = options.maxOutputBytes ?? 10 * 1024 * 1024
 
   return await new Promise<RunResult>((resolve, reject) => {
@@ -236,19 +235,17 @@ async function runOcr(args: string[], options: RunOptions): Promise<RunResult> {
     }
     options.signal?.addEventListener("abort", abort, { once: true })
 
-    if (timeoutMs !== null) {
-      timer = setTimeout(() => {
-        terminateChild()
-        finish(() => reject(new OcrExecutionError(
-          `OpenCodeReview timed out after ${Math.round(timeoutMs / 1000)} seconds.`,
-          {
-            exitCode: null,
-            stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-            stderr: Buffer.concat(stderrChunks).toString("utf8"),
-          },
-        )))
-      }, timeoutMs)
-    }
+    timer = setTimeout(() => {
+      terminateChild()
+      finish(() => reject(new OcrExecutionError(
+        `OpenCodeReview timed out after ${Math.round(timeoutMs / 1000)} seconds.`,
+        {
+          exitCode: null,
+          stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+          stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        },
+      )))
+    }, timeoutMs)
 
     if (options.signal?.aborted) {
       abort()
@@ -287,9 +284,6 @@ const reviewArgs = {
   model: optionalString("Override the model configured in OpenCodeReview."),
   concurrency: optionalPositiveInt("Maximum concurrent file reviews."),
   timeoutMinutes: optionalPositiveInt("Per-file OCR timeout in minutes."),
-  overallTimeoutMinutes: optionalPositiveInt(
-    "Optional wall-clock timeout for the complete OCR process in minutes.",
-  ),
   maxTools: optionalPositiveInt("Maximum tool-call rounds per file; OCR enforces a minimum of 10."),
   maxGitProcesses: optionalPositiveInt("Maximum concurrent Git subprocesses."),
   preview: tool.schema.boolean().optional().describe(
@@ -336,15 +330,7 @@ export const OpenCodeReviewPlugin: Plugin = async ({ client, worktree }) => {
         async execute(args, context) {
           const input = args as ReviewInput
           const cwd = context.worktree || context.directory || worktree
-          const defaultOverallMs = 30 * 60 * 1000
-          const options: RunOptions = {
-            cwd,
-            signal: context.abort,
-            timeoutMs: input.overallTimeoutMinutes !== undefined
-              ? input.overallTimeoutMinutes * 60 * 1000
-              : defaultOverallMs,
-          }
-          const result = await runOcr(buildReviewArgs(input, cwd), options)
+          const result = await runOcr(buildReviewArgs(input, cwd), { cwd, signal: context.abort })
           return formatReviewResult(result, input.preview === true)
         },
       }),

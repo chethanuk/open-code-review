@@ -269,19 +269,11 @@ func TestExecuteReviewFilter_RemovesComments(t *testing.T) {
 	tmpDir := t.TempDir()
 	sess := session.New(tmpDir, "main", "test", session.SessionOptions{ReviewMode: "diff"})
 
+	filterResp := `["c-1"]`
 	client := &fakeAgentClient{
 		responses: []*llm.ChatResponse{{
 			Choices: []llm.Choice{{
-				Message: llm.ResponseMessage{
-					ToolCalls: []llm.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						Function: llm.FunctionCall{
-							Name:      "report_incorrect_comments",
-							Arguments: `{"comment_ids":["c-1"]}`,
-						},
-					}},
-				},
+				Message: llm.ResponseMessage{Content: &filterResp},
 			}},
 			Usage: &llm.UsageInfo{PromptTokens: 10, CompletionTokens: 5},
 		}},
@@ -426,19 +418,11 @@ func TestExecuteReviewFilter_SkipFilter(t *testing.T) {
 		tmpDir := t.TempDir()
 		sess := session.New(tmpDir, "main", "test", session.SessionOptions{ReviewMode: "diff"})
 
+		filterResp := `["c-1"]`
 		client := &fakeAgentClient{
 			responses: []*llm.ChatResponse{{
 				Choices: []llm.Choice{{
-					Message: llm.ResponseMessage{
-						ToolCalls: []llm.ToolCall{{
-							ID:   "call_1",
-							Type: "function",
-							Function: llm.FunctionCall{
-								Name:      "report_incorrect_comments",
-								Arguments: `{"comment_ids":["c-1"]}`,
-							},
-						}},
-					},
+					Message: llm.ResponseMessage{Content: &filterResp},
 				}},
 				Usage: &llm.UsageInfo{PromptTokens: 10, CompletionTokens: 5},
 			}},
@@ -791,21 +775,11 @@ func TestExecuteReviewFilter_WithTimeout(t *testing.T) {
 	tmpDir := t.TempDir()
 	sess := session.New(tmpDir, "main", "test", session.SessionOptions{ReviewMode: "diff"})
 
+	filterResp := `[]`
 	client := &fakeAgentClient{
 		responses: []*llm.ChatResponse{{
-			Choices: []llm.Choice{{
-				Message: llm.ResponseMessage{
-					ToolCalls: []llm.ToolCall{{
-						ID:   "call_1",
-						Type: "function",
-						Function: llm.FunctionCall{
-							Name:      "approve_all_comments",
-							Arguments: `{}`,
-						},
-					}},
-				},
-			}},
-			Usage: &llm.UsageInfo{PromptTokens: 5, CompletionTokens: 2},
+			Choices: []llm.Choice{{Message: llm.ResponseMessage{Content: &filterResp}}},
+			Usage:   &llm.UsageInfo{PromptTokens: 5, CompletionTokens: 2},
 		}},
 	}
 

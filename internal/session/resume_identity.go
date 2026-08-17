@@ -14,6 +14,7 @@ type RunIdentity struct {
 	SourceArtifactSHA256 string // manifest input.source_artifact_sha256
 	RuleConfigSHA256     string // manifest execution.rule_config_sha256
 	RepositorySHA256     string // manifest repository.identity_sha256; empty when the repo has no remote
+	PerFileMaxTokens     int    // manifest execution.per_file_max_tokens
 }
 
 // ResumeRequest is what the resuming command is asking to do: run this input
@@ -29,6 +30,9 @@ type ResumeRequest struct {
 	Model            string
 	ProviderExplicit bool
 	ModelExplicit    bool
+	Incremental      bool
+	ResolvedBase     string
+	PerFileMaxTokens int
 }
 
 const resumeHint = "start a new review instead of resuming"
@@ -51,7 +55,7 @@ func (s *ResumeState) ValidateResume(req ResumeRequest) error {
 	if s == nil {
 		return nil
 	}
-	if err := s.validateInputIdentity(req.Identity); err != nil {
+	if err := s.validateInputIdentity(req); err != nil {
 		return err
 	}
 
@@ -76,10 +80,11 @@ func (s *ResumeState) ValidateResume(req ResumeRequest) error {
 // This runs once, at admission, and is never repeated during the run: the caller
 // pins the run to the commit endpoints this comparison was made against (see
 // agent.SealedInput), so a second comparison could only ever confirm the first.
-func (s *ResumeState) validateInputIdentity(id RunIdentity) error {
+func (s *ResumeState) validateInputIdentity(req ResumeRequest) error {
 	if s == nil {
 		return nil
 	}
+	id := req.Identity
 
 	m := s.Manifest
 	switch {
@@ -113,7 +118,17 @@ func (s *ResumeState) validateInputIdentity(id RunIdentity) error {
 	if m.Repository.IdentitySHA256 != id.RepositorySHA256 {
 		return fmt.Errorf("resume rejected: repository identity changed, so this is not the repository the parent run reviewed; %s", resumeHint)
 	}
-	if m.Input.SourceArtifactSHA256 != id.SourceArtifactSHA256 {
+	if req.Incremental {
+		if m.Input.Mode != InputModeRange {
+			return fmt.Errorf("incremental resume is only supported for range mode, got %q; %s", m.Input.Mode, resumeHint)
+		}
+		if req.ResolvedBase == "" || m.Input.ResolvedBase != req.ResolvedBase {
+			return fmt.Errorf("the reviewed input base commit changed (parent: %q, requested: %q); %s", m.Input.ResolvedBase, req.ResolvedBase, resumeHint)
+		}
+		if req.PerFileMaxTokens != m.Execution.PerFileMaxTokens {
+			return fmt.Errorf("per-file max token ceiling changed (parent: %d, requested: %d); %s", m.Execution.PerFileMaxTokens, req.PerFileMaxTokens, resumeHint)
+		}
+	} else if m.Input.SourceArtifactSHA256 != id.SourceArtifactSHA256 {
 		return fmt.Errorf("resume rejected: the reviewed input changed since session %q — a ref may now point at a different commit, or the selected file set changed; %s", s.SessionID, resumeHint)
 	}
 	if m.Execution.RuleConfigSHA256 == "" {
