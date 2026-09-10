@@ -22,6 +22,7 @@ import (
 	"github.com/alibaba/open-code-review/internal/diff"
 	"github.com/alibaba/open-code-review/internal/gitcmd"
 	"github.com/alibaba/open-code-review/internal/model"
+	"github.com/alibaba/open-code-review/internal/textenc"
 )
 
 // binarySniffWindow is the number of leading bytes inspected to decide
@@ -30,7 +31,7 @@ const binarySniffWindow = 8000
 
 // DefaultMaxFileSizeBytes is the default hard cap on how large a single
 // file may be before the scanner skips it. The real review-feasibility
-// limit is the per-file token budget (filterLargeScans, ~188 KB at
+// limit is the per-file token budget (selectScanItems, ~188 KB at
 // MaxTokens=58888) — this byte cap exists only to stop us from reading
 // multi-MB dumps into memory. Callers can override via NewProvider.
 const DefaultMaxFileSizeBytes int64 = 2 << 20 // 2 MiB
@@ -136,12 +137,22 @@ func (p *Provider) Enumerate(ctx context.Context) ([]model.ScanItem, error) {
 			fmt.Fprintf(os.Stderr, "[ocr] WARNING: cannot read %s: %v\n", rel, err)
 			continue
 		}
-		out = append(out, model.ScanItem{
+		// Scan's own detection seam: whole-file evidence, one answer, applied
+		// to the only stream scan produces. A file we cannot decode keeps its
+		// raw bytes and is marked; whether it is also excluded is decided by
+		// the shared reviewability filter, not here.
+		text, charset, ok := textenc.DecodeSource(rel, content)
+		item := model.ScanItem{
 			Path:      rel,
-			Content:   string(content),
+			Content:   text,
 			IsBinary:  false,
-			LineCount: countLines(content),
-		})
+			LineCount: countLines([]byte(text)),
+		}
+		if !ok {
+			item.UndecodedCharset = charset
+			item.Unreviewable = textenc.Unreviewable(charset, content)
+		}
+		out = append(out, item)
 	}
 	return out, nil
 }
