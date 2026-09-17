@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -467,11 +468,27 @@ func selectedScanItems(decisions []scanSelection) []model.ScanItem {
 func (a *Agent) logSelection(decisions []scanSelection) {
 	staticSkipped := 0
 	for _, decision := range decisions {
-		if decision.reason == model.ExcludeNone || decision.reason == model.ExcludeTooLarge {
+		if decision.reason == model.ExcludeNone {
+			// The file IS reviewed. The undecoded warning lives at this
+			// reporting site for the reason spelled out in logExclusions in
+			// internal/agent/agent.go.
+			if decision.item.UndecodedCharset != "" {
+				fmt.Fprintf(os.Stderr,
+					"[ocr] WARNING: %s left undecoded (detected %s); review text may contain replacement characters\n",
+					decision.item.Path, decision.item.UndecodedCharset)
+			}
+			continue
+		}
+		if decision.reason == model.ExcludeTooLarge {
 			continue
 		}
 		if decision.item.IsBinary {
 			fmt.Fprintf(stdout.Writer(), "[ocr] Skipping %s — binary file\n", decision.item.Path)
+		} else if decision.reason == model.ExcludeUndecodable {
+			fmt.Fprintf(stdout.Writer(), "[ocr] Skipping %s — undecodable encoding (detected %s)\n",
+				decision.item.Path, decision.item.UndecodedCharset)
+		} else if decision.reason == model.ExcludeSecret {
+			fmt.Fprintf(stdout.Writer(), "[ocr] Skipping %s — matches a built-in secret path\n", decision.item.Path)
 		} else {
 			fmt.Fprintf(stdout.Writer(), "[ocr] Skipping %s — filtered by path/extension rules\n", decision.item.Path)
 		}
@@ -500,7 +517,17 @@ func (a *Agent) whyExcluded(it model.ScanItem) model.ExcludeReason {
 	if it.IsBinary {
 		return model.ExcludeBinary
 	}
+	// Same position as internal/agent.whyExcluded: before the extension
+	// allowlist, so the encoding is reported as the reason.
+	if it.Unreviewable {
+		return model.ExcludeUndecodable
+	}
 	path := it.Path
+	// Ahead of both user rules, matching internal/agent: no include glob can
+	// admit a credential path, and no user exclude can reclassify it. See #1240.
+	if allowedext.IsSecretPath(path) {
+		return model.ExcludeSecret
+	}
 	if a.args.FileFilter != nil && a.args.FileFilter.IsUserExcluded(path) {
 		return model.ExcludeUserRule
 	}
