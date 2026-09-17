@@ -143,11 +143,6 @@ func executeScan(opts scanOptions) (retErr error) {
 		// (unknown values silently fall back to "none").
 		scanTpl.BatchStrategy = opts.batch
 	}
-	// Token budget: --max-tokens-budget overrides the template value when set.
-	budget := scanTpl.MaxTokensBudget
-	if opts.maxTokensBudget > 0 {
-		budget = int64(opts.maxTokensBudget)
-	}
 
 	scanPaths := splitPaths(opts.paths)
 
@@ -178,6 +173,12 @@ func executeScan(opts scanOptions) (retErr error) {
 		return err
 	}
 	scanTpl.MaxTokens = maxTokens
+	// Token budget: --max-tokens-budget overrides the saved max_tokens_budget,
+	// which in turn overrides the template value.
+	budget, err := resolveMaxTokensBudget(scanTpl.MaxTokensBudget, rt.AppCfg, opts.maxTokensBudget)
+	if err != nil {
+		return err
+	}
 	llmIdentity := &jsonLLMIdentity{
 		Provider: rt.Provider,
 		Model:    rt.Model,
