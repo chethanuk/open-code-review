@@ -1,0 +1,90 @@
+# Throwaway measurement: which GITHUB_TOKEN scope does the GraphQL
+# `resolveReviewThread` mutation actually require?
+#
+# Three jobs differing ONLY in the permissions block, each targeting its own
+# unresolved review thread on this PR so they cannot interfere. Every job
+# reports `viewerCanResolve` (a read) before attempting the mutation (a write),
+# so we learn both whether the mutation works and whether that field predicts it.
+#
+# No try/catch anywhere on purpose: the popular implementations of this feature
+# swallow the failure and look green while never having worked.
+name: probe-resolve-perm
+
+on:
+  push:
+    branches: [probe/resolve-perm]
+
+permissions: {}
+
+env:
+  PR: "38"
+
+jobs:
+  pr-write-only:
+    name: "A: pull-requests write, contents read"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Probe then resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          THREAD: PRRT_kwDOTOgl9s6jR6Aq
+        run: |
+          set -euo pipefail
+          echo "::group::viewerCanResolve (read)"
+          gh api graphql -f owner=chethanuk -f name=open-code-review -F pr="$PR" \
+            -f query='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:20){nodes{id line isResolved viewerCanResolve}}}}}' \
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[] | "line=\(.line) id=\(.id) resolved=\(.isResolved) viewerCanResolve=\(.viewerCanResolve)"'
+          echo "::endgroup::"
+          echo "MUTATION on $THREAD"
+          gh api graphql -f threadId="$THREAD" \
+            -f query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}'
+
+  contents-write-only:
+    name: "B: contents write, pull-requests read"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Probe then resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          THREAD: PRRT_kwDOTOgl9s6jR6iK
+        run: |
+          set -euo pipefail
+          echo "::group::viewerCanResolve (read)"
+          gh api graphql -f owner=chethanuk -f name=open-code-review -F pr="$PR" \
+            -f query='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:20){nodes{id line isResolved viewerCanResolve}}}}}' \
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[] | "line=\(.line) id=\(.id) resolved=\(.isResolved) viewerCanResolve=\(.viewerCanResolve)"'
+          echo "::endgroup::"
+          echo "MUTATION on $THREAD"
+          gh api graphql -f threadId="$THREAD" \
+            -f query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}'
+
+  both-write:
+    name: "C: contents write, pull-requests write"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Probe then resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          THREAD: PRRT_kwDOTOgl9s6jR6kV
+        run: |
+          set -euo pipefail
+          echo "::group::viewerCanResolve (read)"
+          gh api graphql -f owner=chethanuk -f name=open-code-review -F pr="$PR" \
+            -f query='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){reviewThreads(first:20){nodes{id line isResolved viewerCanResolve}}}}}' \
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[] | "line=\(.line) id=\(.id) resolved=\(.isResolved) viewerCanResolve=\(.viewerCanResolve)"'
+          echo "::endgroup::"
+          echo "MUTATION on $THREAD"
+          gh api graphql -f threadId="$THREAD" \
+            -f query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}'
