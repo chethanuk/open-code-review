@@ -307,6 +307,34 @@ model's **output** cap (`MAX_COMPLETION_TOKENS`, `16384` in both templates)
 and of `--max-tokens-budget`, which caps total token use for a whole run.
 Restore the embedded default with `ocr config unset max_tokens`.
 
+### Token budget
+
+`max_tokens_budget` caps the **total** token use (input + output) of a whole
+run, where `max_tokens` caps a single subtask. There is no default: without it
+a run is unlimited. Save a cap with:
+
+```bash
+ocr config set max_tokens_budget 1000000
+```
+
+The setting applies to both `ocr review` and `ocr scan`. Use
+`--max-tokens-budget` for a one-off override without changing the saved
+configuration:
+
+```bash
+ocr review --max-tokens-budget 200000
+ocr scan --max-tokens-budget 200000
+```
+
+The per-run flag takes precedence over `max_tokens_budget`; when neither is
+set, `ocr scan` uses its task-template value and `ocr review` is unlimited.
+The budget is checked before every LLM round: a subtask already over budget
+gets one final round to submit its findings and is reported as
+`failed(budget)`, no further subtasks are dispatched, and partial results are
+still published — the run stops on its own rather than asking whether to
+continue. `0` is not a settable value; remove the cap with
+`ocr config unset max_tokens_budget`.
+
 ### Review effort
 
 `effort` sets how many review rounds each subtask gets: `low` = 1,

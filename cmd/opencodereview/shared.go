@@ -65,6 +65,27 @@ func resolveMaxTokens(templateDefault int, cfg *Config, cliOverride int) (int, e
 	return cfg.MaxTokens, nil
 }
 
+// resolveMaxTokensBudget applies the per-run CLI override, then the saved
+// setting, and finally the template default. Mirrors resolveMaxTokens; the
+// budget is int64 because that is what agent.Args and scan.Args hold.
+// Review has no template-level budget (Template has no such field, by design),
+// so it passes 0 and an unconfigured review stays unlimited.
+func resolveMaxTokensBudget(templateDefault int64, cfg *Config, cliOverride int) (int64, error) {
+	if cliOverride < 0 {
+		return 0, fmt.Errorf("--max-tokens-budget must be a non-negative integer")
+	}
+	if cliOverride > 0 {
+		return int64(cliOverride), nil
+	}
+	if cfg == nil || cfg.MaxTokensBudget == 0 {
+		return templateDefault, nil
+	}
+	if cfg.MaxTokensBudget < 0 {
+		return 0, fmt.Errorf("invalid max_tokens_budget in app config: must be a positive integer")
+	}
+	return cfg.MaxTokensBudget, nil
+}
+
 // resolveEffort applies the standard precedence for the review effort preset:
 // CLI flag > saved app config > EffortDefault.
 func resolveEffort(cfg *Config, cliOverride string) (template.Effort, error) {

@@ -46,6 +46,37 @@ func TestResolveMaxTokensPrecedence(t *testing.T) {
 	}
 }
 
+func TestResolveMaxTokensBudgetPrecedence(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         *Config
+		cliOverride int
+		template    int64
+		want        int64
+		wantErr     bool
+	}{
+		{name: "template default", template: 500000, want: 500000},
+		{name: "no template default is unlimited", want: 0},
+		{name: "zero config is unset", cfg: &Config{}, template: 500000, want: 500000},
+		{name: "saved config", cfg: &Config{MaxTokensBudget: 1000000}, template: 500000, want: 1000000},
+		{name: "cli overrides config", cfg: &Config{MaxTokensBudget: 1000000}, cliOverride: 200000, template: 500000, want: 200000},
+		{name: "negative config", cfg: &Config{MaxTokensBudget: -1}, template: 500000, wantErr: true},
+		{name: "negative cli", cliOverride: -1, template: 500000, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveMaxTokensBudget(tt.template, tt.cfg, tt.cliOverride)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("resolveMaxTokensBudget() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("resolveMaxTokensBudget() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestApplyCLIExcludes_Empty(t *testing.T) {
 	cc := &commonContext{FileFilter: &rules.FileFilter{Exclude: []string{"a"}}}
 	applyCLIExcludes(cc, nil)
