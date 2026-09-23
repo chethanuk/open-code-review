@@ -116,6 +116,43 @@ func TestMaxTokensConfigRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSetConfigValueMaxTokensBudget(t *testing.T) {
+	cfg := &Config{}
+
+	if err := setConfigValue(cfg, "max_tokens_budget", "5000000000"); err != nil {
+		t.Fatalf("setConfigValue: %v", err)
+	}
+	if cfg.MaxTokensBudget != 5000000000 {
+		t.Errorf("MaxTokensBudget = %d, want 5000000000", cfg.MaxTokensBudget)
+	}
+}
+
+func TestSetConfigValueMaxTokensBudgetRejectsInvalidValues(t *testing.T) {
+	for _, value := range []string{"0", "-1", "not-a-number"} {
+		t.Run(value, func(t *testing.T) {
+			if err := setConfigValue(&Config{}, "max_tokens_budget", value); err == nil {
+				t.Fatalf("expected max_tokens_budget=%q to be rejected", value)
+			}
+		})
+	}
+}
+
+func TestMaxTokensBudgetConfigRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := &Config{MaxTokensBudget: 1000000}
+
+	if err := saveConfig(path, cfg); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	loaded, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatalf("LoadAppConfig: %v", err)
+	}
+	if loaded.MaxTokensBudget != 1000000 {
+		t.Errorf("MaxTokensBudget = %d, want 1000000", loaded.MaxTokensBudget)
+	}
+}
+
 func TestSetConfigValueModelWithProvider(t *testing.T) {
 	cfg := &Config{
 		Provider: "anthropic",
@@ -577,6 +614,38 @@ func TestUnsetMaxTokens(t *testing.T) {
 	}
 	if loaded.Provider != "anthropic" {
 		t.Errorf("Provider = %q, want anthropic", loaded.Provider)
+	}
+}
+
+func TestUnsetMaxTokensBudget(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := &Config{Provider: "anthropic", MaxTokensBudget: 1000000}
+	if err := saveConfig(configPath, cfg); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+
+	if err := unsetMaxTokensBudget(configPath); err != nil {
+		t.Fatalf("unsetMaxTokensBudget: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(data), "max_tokens_budget") {
+		t.Errorf("max_tokens_budget should be omitted after unset: %s", data)
+	}
+	loaded, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if loaded.Provider != "anthropic" {
+		t.Errorf("Provider = %q, want anthropic", loaded.Provider)
+	}
+
+	// Clearing a key that was never saved stays a successful no-op.
+	if err := unsetMaxTokensBudget(configPath); err != nil {
+		t.Fatalf("second unsetMaxTokensBudget: %v", err)
 	}
 }
 
@@ -1140,7 +1209,7 @@ func TestSetConfigValueUnknownKeyMessage(t *testing.T) {
 		t.Fatal("expected error for unknown key")
 	}
 	want := "unknown config key: bogus.key\n" +
-		"Supported keys: provider, model, max_tokens, effort, providers.<name>.<field>, custom_providers.<name>.<field>, mcp_servers.<name>.<field>, llm.url, llm.auth_token, llm.auth_token_cmd, llm.auth_header, llm.model, llm.timeout_sec, llm.protocol, llm.use_anthropic, llm.extra_body, llm.extra_headers, llm.retry_codes, language, telemetry.enabled, telemetry.exporter, telemetry.otlp_endpoint, telemetry.content_logging\n" +
+		"Supported keys: provider, model, max_tokens, max_tokens_budget, effort, providers.<name>.<field>, custom_providers.<name>.<field>, mcp_servers.<name>.<field>, llm.url, llm.auth_token, llm.auth_token_cmd, llm.auth_header, llm.model, llm.timeout_sec, llm.protocol, llm.use_anthropic, llm.extra_body, llm.extra_headers, llm.retry_codes, language, telemetry.enabled, telemetry.exporter, telemetry.otlp_endpoint, telemetry.content_logging\n" +
 		"Provider fields: api_key, api_key_cmd, url, protocol, model, models, auth_header, timeout_sec, extra_body, extra_headers, retry_codes, aws_region, aws_profile\n" +
 		"Protocol values: anthropic, anthropic-bedrock, openai, openai-responses\n" +
 		"MCP server fields: type, command, args, env, url, headers, tools, setup"

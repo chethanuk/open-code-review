@@ -159,13 +159,16 @@ func runConfigUnset(key string) error {
 	if key == "max_tokens" {
 		return unsetMaxTokens(configPath)
 	}
+	if key == "max_tokens_budget" {
+		return unsetMaxTokensBudget(configPath)
+	}
 	if key == "effort" {
 		return unsetEffort(configPath)
 	}
 
 	parts := strings.SplitN(key, ".", 2)
 	if len(parts) != 2 || parts[1] == "" {
-		return fmt.Errorf("unset supports provider, max_tokens, effort, custom_providers.<name>, and mcp_servers.<name>")
+		return fmt.Errorf("unset supports provider, max_tokens, max_tokens_budget, effort, custom_providers.<name>, and mcp_servers.<name>")
 	}
 
 	switch parts[0] {
@@ -174,7 +177,7 @@ func runConfigUnset(key string) error {
 	case "mcp_servers":
 		return unsetMCPServer(configPath, parts[1])
 	default:
-		return fmt.Errorf("unset supports provider, max_tokens, effort, custom_providers.<name>, and mcp_servers.<name>")
+		return fmt.Errorf("unset supports provider, max_tokens, max_tokens_budget, effort, custom_providers.<name>, and mcp_servers.<name>")
 	}
 }
 
@@ -190,6 +193,21 @@ func unsetMaxTokens(configPath string) error {
 	}
 
 	fmt.Println("Cleared max_tokens; using the embedded template default.")
+	return nil
+}
+
+func unsetMaxTokensBudget(configPath string) error {
+	cfg, err := loadOrCreateConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	cfg.MaxTokensBudget = 0
+	if err := saveConfig(configPath, cfg); err != nil {
+		return err
+	}
+
+	fmt.Println("Cleared max_tokens_budget; the run is unlimited again.")
 	return nil
 }
 
@@ -360,6 +378,7 @@ type Config struct {
 	Provider        string                     `json:"provider,omitempty"`
 	Model           string                     `json:"model,omitempty"`
 	MaxTokens       int                        `json:"max_tokens,omitempty"`
+	MaxTokensBudget int64                      `json:"max_tokens_budget,omitempty"`
 	Effort          string                     `json:"effort,omitempty"`
 	Providers       map[string]ProviderEntry   `json:"providers,omitempty"`
 	CustomProviders map[string]ProviderEntry   `json:"custom_providers,omitempty"`
@@ -615,6 +634,7 @@ var supportedConfigKeys = []string{
 	"provider",
 	"model",
 	"max_tokens",
+	"max_tokens_budget",
 	"effort",
 	"providers.<name>.<field>",
 	"custom_providers.<name>.<field>",
@@ -696,6 +716,12 @@ func setConfigValue(cfg *Config, key, value string) error {
 			return fmt.Errorf("invalid max_tokens %q: must be a positive integer", value)
 		}
 		cfg.MaxTokens = maxTokens
+	case "max_tokens_budget":
+		budget, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || budget <= 0 {
+			return fmt.Errorf("invalid max_tokens_budget %q: must be a positive integer", value)
+		}
+		cfg.MaxTokensBudget = budget
 	case "effort":
 		e, err := template.ParseEffort(value)
 		if err != nil {

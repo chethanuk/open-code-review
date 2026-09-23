@@ -179,6 +179,13 @@ func executeReviewContext(ctx context.Context, opts reviewOptions) (retErr error
 	}
 	cc.Template.ApplyEffort(effort)
 
+	// Review has no template-level token budget, so the template default is 0
+	// (unlimited) and only --max-tokens-budget or the saved setting can cap a run.
+	maxTokensBudget, err := resolveMaxTokensBudget(0, rt.AppCfg, opts.maxTokensBudget)
+	if err != nil {
+		return err
+	}
+
 	// Strictly before agent.New, so a rejected resume persists nothing. The sealed
 	// input it returns pins the run to the very commits this check passed on, so
 	// the decision cannot be undone by a ref moving afterwards.
@@ -236,7 +243,7 @@ func executeReviewContext(ctx context.Context, opts reviewOptions) (retErr error
 		GitRunner:             cc.GitRunner,
 		Resume:                resumeState,
 		SealedInput:           sealedInput,
-		MaxTokensBudget:       int64(opts.maxTokensBudget),
+		MaxTokensBudget:       maxTokensBudget,
 		SkipFilter:            opts.noFilter,
 		RuntimeConfig:         rt.RuntimeConfig,
 	})
