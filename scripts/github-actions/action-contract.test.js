@@ -1761,6 +1761,11 @@ function testInstallEnforcesAuthTokenCommandVersionFloor() {
   );
   assert.ok(inputBlock, "action.yml must expose ocr_version metadata");
   assert.match(inputBlock[1], /1\.9\.6/, "ocr_version must document the minimum compatible OCR release");
+  assert.match(
+    inputBlock[1],
+    /latest[\s\S]*?does\s+not\s+freeze[\s\S]*?exact\s+version/i,
+    "ocr_version must say that the default latest is resolved at run time and name the exact-version pin"
+  );
 
   const cases = [
     { output: "open-code-review 1.9.5 linux/amd64", valid: false },
