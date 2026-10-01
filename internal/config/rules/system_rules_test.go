@@ -174,6 +174,9 @@ func TestResolve_DefaultRules(t *testing.T) {
 		{"src/amm.vy", "Reentrancy and `@nonreentrant`"},
 		{"policies/authz.rego", "Default Posture"},
 		{"policies/authz.REGO", "Default Posture"},
+		{"arch/arm64/boot/dts/vendor/board.dts", "Node Addressing"},
+		{"arch/arm64/boot/dts/vendor/soc.dtsi", "Node Addressing"},
+		{"arch/arm64/boot/dts/vendor/BOARD.DTS", "Node Addressing"},
 	}
 
 	for _, tt := range tests {
