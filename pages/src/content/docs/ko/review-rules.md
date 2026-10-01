@@ -320,6 +320,7 @@ OCR은 [`bmatcuk/doublestar/v4`](https://pkg.go.dev/github.com/bmatcuk/doublesta
 | `**/*.sol`                          | `solidity.md` — Solidity 스마트 컨트랙트.                                        |
 | `**/*.vy`                           | `vyper.md` — Vyper 스마트 컨트랙트.                                              |
 | `**/*.rego`                         | `rego.md` — Rego 정책 (OPA).                                                     |
+| `**/*.scl`                          | `scl.md` — Siemens SCL (S7 구조적 텍스트).                                       |
 | _(대체값)_                          | `default.md`                                                                     |
 
 해석된 규칙 본문은 plan과 main 작업 프롬프트에서 `{{system_rule}}` 자리에 들어갑니다.
