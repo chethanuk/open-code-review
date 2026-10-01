@@ -56,7 +56,7 @@
     "**/*.vy": "vyper.md",
     "**/*.rego": "rego.md",
     "**/*.{ld,lds}": "linker_script.md",
-    "**/*lds.s": "linker_script.md",
+    "**/*[.]lds.s": "linker_script.md",
     "**/*.s": "asm.md"
   }
 }
