@@ -308,6 +308,8 @@ OCR 用 [`bmatcuk/doublestar/v4`](https://pkg.go.dev/github.com/bmatcuk/doublest
 | `**/*.sol`                          | `solidity.md`——Solidity 智能合约。                                    |
 | `**/*.vy`                           | `vyper.md`——Vyper 智能合约。                                          |
 | `**/*.rego`                         | `rego.md`——Rego 策略（OPA）。                                         |
+| `**/*.{ld,lds}`                     | `linker_script.md`——GNU 链接脚本（含 `.lds.S`）。                     |
+| `**/*.s`                            | `asm.md`——汇编（`.s`、`.S`）。                                        |
 | _(fallback)_                        | `default.md`                                                          |
 
 解析出的规则正文成为 plan 和 main task prompt 中 `{{system_rule}}` 占位符的内容。
