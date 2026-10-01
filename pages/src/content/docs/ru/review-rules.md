@@ -338,6 +338,8 @@ OCR использует [`bmatcuk/doublestar/v4`](https://pkg.go.dev/github.com
 | `**/*.sol`                          | `solidity.md` — смарт-контракты Solidity.                                                        |
 | `**/*.vy`                           | `vyper.md` — смарт-контракты Vyper.                                                              |
 | `**/*.rego`                         | `rego.md` — политики Rego (OPA).                                                                 |
+| `**/*.{ld,lds}`                     | `linker_script.md` — скрипты компоновщика GNU (включая `.lds.S`).                                |
+| `**/*.s`                            | `asm.md` — ассемблер (`.s`, `.S`).                                                               |
 | _(fallback)_                        | `default.md`                                                                                     |
 
 Разрешённое тело правила становится значением плейсхолдера `{{system_rule}}`

@@ -174,6 +174,16 @@ func TestResolve_DefaultRules(t *testing.T) {
 		{"src/amm.vy", "Reentrancy and `@nonreentrant`"},
 		{"policies/authz.rego", "Default Posture"},
 		{"policies/authz.REGO", "Default Posture"},
+		{"arch/arm64/kernel/entry.S", "Calling Convention and Register Use"},
+		{"arch/arm64/kernel/head.s", "Calling Convention and Register Use"},
+		{"board/link.ld", "Memory Regions and Placement"},
+		{"arch/arm64/kernel/vmlinux.lds.S", "Memory Regions and Placement"},
+		{"board/LINK.LDS", "Memory Regions and Placement"},
+		{"arch/x86/boot/setup.lds.S", "Memory Regions and Placement"},
+		// Names that merely end in "lds.s" are plain assembly, not linker scripts.
+		{"tools/builds.s", "Calling Convention and Register Use"},
+		{"src/fields.S", "Calling Convention and Register Use"},
+		{"lds.s", "Calling Convention and Register Use"},
 	}
 
 	for _, tt := range tests {
