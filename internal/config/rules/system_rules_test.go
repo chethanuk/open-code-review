@@ -174,6 +174,8 @@ func TestResolve_DefaultRules(t *testing.T) {
 		{"src/amm.vy", "Reentrancy and `@nonreentrant`"},
 		{"policies/authz.rego", "Default Posture"},
 		{"policies/authz.REGO", "Default Posture"},
+		{"plc/FC_Motor.scl", "Scan Cycle"},
+		{"plc/FB_Pump.SCL", "Scan Cycle"},
 	}
 
 	for _, tt := range tests {
